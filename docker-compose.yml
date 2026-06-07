@@ -2,14 +2,12 @@
 # Vernify Bootstrap Container — Docker Compose convenience wrapper
 #
 # Usage:
-#   source .env        # load secrets from your filled-in .env file
-#   docker compose run --rm bootstrap
+#   cp .env.example .env
+#   $EDITOR .env        # fill in required values (paths, secrets)
+#   docker compose run -it --rm bootstrap
 #
-# Or to skip the compose file entirely:
-#   docker run --rm -it \
-#     --env-file <(env | grep -E '^(PROXMOX|TFC|GIT|STEP|BOOTSTRAP|VAULT)') \
-#     -v ~/.ssh/id_vernify_bootstrap:/run/secrets/bootstrap_ssh_key:ro \
-#     vernify/bootstrap-container
+# Docker Compose automatically loads .env from the current directory,
+# so all secrets and paths are available when the container starts.
 # ===========================================================================
 services:
   bootstrap:
@@ -40,9 +38,7 @@ services:
         read_only: true
       # Mount the entire workspace (~/workspace) so all IaC code is available inside.
       # This includes vernify, iac-foundry, and all subprojects.
-      # Docker compose does not expand ~, so export BOOTSTRAP_WORKSPACE_PATH first:
-      #   export BOOTSTRAP_WORKSPACE_PATH=$HOME/workspace
-      #   docker compose run --rm bootstrap
+      # BOOTSTRAP_WORKSPACE_PATH is loaded from .env by docker-compose automatically.
       - type: bind
         source: ${BOOTSTRAP_WORKSPACE_PATH}
         target: /workspace

@@ -71,6 +71,8 @@ that is missing.
 
 ## Quick start
 
+**For interactive shell** (recommended for manual work):
+
 ```bash
 # 1. Clone
 git clone https://github.com/Vernify/bootstrap-container.git
@@ -78,16 +80,17 @@ cd bootstrap-container
 
 # 2. Fill in secrets
 cp .env.example .env
-$EDITOR .env          # populate all required values
+$EDITOR .env          # populate all required values (workspace path, proxmox, etc)
 
 # 3. Build the image
 docker compose build
 
-# 4. Run — secrets are loaded from .env; missing ones are prompted interactively
-source .env
-docker compose run --rm bootstrap
+# 4. Run with interactive shell
+# Docker Compose automatically loads .env, so no need to source it
+docker compose run -it --rm bootstrap
+# You are now inside the container shell with /workspace mounted
 
-# Inside the container, confirm all tools are available:
+# Confirm all tools are available:
 ansible --version
 packer version
 terraform version
@@ -95,8 +98,19 @@ vault version
 step version
 jq --version
 
+# Explore the workspace:
+cd /workspace && ls -la
+
 # Exit the container
 exit
+```
+
+**For non-interactive use** (e.g. in CI/CD):
+
+```bash
+docker compose run --rm bootstrap ansible-playbook my-playbook.yml
+# or
+docker compose run --rm bootstrap packer build template.pkr.hcl
 ```
 
 **For the full Phase 0–5 bootstrap workflow, see [RUNBOOK.md](RUNBOOK.md).**

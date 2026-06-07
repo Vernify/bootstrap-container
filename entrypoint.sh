@@ -135,18 +135,27 @@ export TF_TOKEN_app_terraform_io="${TFC_TOKEN}"
 # ---------------------------------------------------------------------------
 echo ""
 _info "Toolchain versions:"
+# Run version checks with pipefail disabled to avoid SIGPIPE from head -1
+set +o pipefail
 ansible --version       | head -1
 packer version          | head -1
 terraform version       | head -1
 vault version           | head -1
 step version 2>&1       | head -1
 jq --version
+set -o pipefail
 
 echo ""
 _success "Bootstrap environment ready.  Type 'exit' to tear down this container."
 echo ""
 
 # ---------------------------------------------------------------------------
-# Drop into an interactive bash shell
+# Handle both interactive shell and command-line invocation
 # ---------------------------------------------------------------------------
-exec bash --login
+if [[ $# -gt 0 ]]; then
+  # If arguments were passed, execute them
+  exec "$@"
+else
+  # Otherwise, drop into an interactive bash login shell
+  exec bash -i
+fi

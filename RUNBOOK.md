@@ -55,13 +55,37 @@ docker compose build
 This bakes all tools (packer, terraform, ansible, vault, step, jq) and pre-installs the
 `blueprints.*` collections. Build takes 1–2 minutes.
 
-### Step 4: Verify the setup
+### Step 4: Customize your .env file
+
+Edit the `.env` file you created and fill in all required values:
 
 ```bash
-source .env
-docker compose run --rm bootstrap
+$EDITOR .env
+```
 
-# Inside the container, confirm all tools are available:
+**Key values to set:**
+- `BOOTSTRAP_WORKSPACE_PATH`: The full path to your `~/workspace` directory (e.g. `/Users/wernervandermerwe/workspace`)
+- `PROXMOX_URL`, `PROXMOX_USER`, `PROXMOX_PASSWORD`: Your Proxmox credentials
+- `TFC_TOKEN`: Your Terraform Cloud team token
+- `GIT_PAT`: Your GitHub PAT
+- `STEP_CA_PROVISIONER_PASSWORD`: Your step-ca provisioner password
+
+### Step 5: Build and run the container
+
+```bash
+# Build the image (one-time)
+docker compose build
+
+# Run the container interactively
+# Docker Compose automatically loads .env from the current directory
+docker compose run -it --rm bootstrap
+# You are now inside the container shell with all secrets loaded and /workspace mounted
+```
+
+Inside the container, you can run any tool or playbook:
+
+```bash
+# Verify the toolchain
 ansible --version
 packer version
 terraform version
@@ -69,10 +93,11 @@ vault version
 step version
 jq --version
 
-# List the blueprints.* collections:
-ansible-galaxy collection list | grep blueprints
+# Explore the workspace with all IaC code
+cd /workspace
+ls -la
 
-# Exit the container
+# Run commands, then exit when done
 exit
 ```
 
