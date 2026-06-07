@@ -23,8 +23,8 @@ services:
     # Values are read from the shell that ran `source .env`.
     environment:
       - PROXMOX_URL
-      - PROXMOX_TOKEN_ID
-      - PROXMOX_TOKEN_SECRET
+      - PROXMOX_USER
+      - PROXMOX_PASSWORD
       - TFC_TOKEN
       - GIT_PAT
       - STEP_CA_PROVISIONER_PASSWORD

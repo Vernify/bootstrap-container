@@ -52,9 +52,9 @@ that is missing.
 
 | Variable | Description | Secret? |
 |---|---|---|
-| `PROXMOX_URL` | Proxmox web UI URL, e.g. `https://proxmox:8006` | No |
-| `PROXMOX_TOKEN_ID` | Proxmox API token ID, e.g. `root@pam!bootstrap` | No |
-| `PROXMOX_TOKEN_SECRET` | Proxmox API token UUID | **Yes** |
+| `PROXMOX_URL` | Proxmox web UI URL, e.g. `https://pve08.vernify.com:8006` | No |
+| `PROXMOX_USER` | Proxmox username, e.g. `root@pam` | No |
+| `PROXMOX_PASSWORD` | Proxmox password | **Yes** |
 | `TFC_TOKEN` | Terraform Cloud team token | **Yes** |
 | `GIT_PAT` | GitHub PAT (repo read, read:org) for the Vernify org | **Yes** |
 | `STEP_CA_PROVISIONER_PASSWORD` | step-ca JWK/ACME provisioner password | **Yes** |

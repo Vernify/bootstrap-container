@@ -75,13 +75,13 @@ echo ""
 
 # Proxmox
 prompt_if_missing PROXMOX_URL \
-  "Proxmox URL (e.g. https://proxmox.home.vernify.io:8006)"
+  "Proxmox URL (e.g. https://pve08.vernify.com:8006)"
 
-prompt_if_missing PROXMOX_TOKEN_ID \
-  "Proxmox API token ID (e.g. root@pam!bootstrap)"
+prompt_if_missing PROXMOX_USER \
+  "Proxmox username (e.g. root@pam)"
 
-prompt_if_missing PROXMOX_TOKEN_SECRET \
-  "Proxmox API token secret (UUID)" true
+prompt_if_missing PROXMOX_PASSWORD \
+  "Proxmox password" true
 
 # Terraform Cloud
 prompt_if_missing TFC_TOKEN \
