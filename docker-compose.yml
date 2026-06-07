@@ -38,7 +38,8 @@ services:
         source: ${BOOTSTRAP_SSH_KEY_HOST_PATH:-~/.ssh/id_vernify_bootstrap}
         target: /run/secrets/bootstrap_ssh_key
         read_only: true
-      # Mount a workspace directory so IaC files persist across container runs.
+      # Mount the entire workspace (~/workspace) so all IaC code is available inside.
+      # This includes vernify, iac-foundry, and all subprojects.
       - type: bind
-        source: ${BOOTSTRAP_WORKSPACE_PATH:-./workspace}
+        source: ${BOOTSTRAP_WORKSPACE_PATH:-~/workspace}
         target: /workspace

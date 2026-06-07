@@ -86,21 +86,20 @@ docker compose build
 # 4. Run — secrets are loaded from .env; missing ones are prompted interactively
 source .env
 docker compose run --rm bootstrap
-```
 
-Once inside the container:
-```bash
-# Confirm tools are available
+# Inside the container, confirm all tools are available:
 ansible --version
 packer version
 terraform version
 vault version
 step version
+jq --version
 
-# Run a role or playbook, e.g. build the Proxmox base template (Phase 1)
-packer init packer/proxmox/
-packer build packer/proxmox/ubuntu-base.pkr.hcl
+# Exit the container
+exit
 ```
+
+**For the full Phase 0–5 bootstrap workflow, see [RUNBOOK.md](RUNBOOK.md).**
 
 ---
 

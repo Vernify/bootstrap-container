@@ -5,6 +5,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-07
+
+### Added
+- `RUNBOOK.md` — comprehensive operator's guide covering Phase 0–5 of the Vernify greenfield
+  bootstrap; includes prerequisites, step-by-step instructions for each phase, secret seeding
+  into Vault, troubleshooting, and references.
+- `docker-compose.yml` now mounts the host `~/workspace` to `/workspace` inside the container,
+  providing access to all Vernify and iac-foundry code during all phases.
+
+### Changed
+- Proxmox auth changed from token-based to username/password (`PROXMOX_USER` + `PROXMOX_PASSWORD`)
+  to match existing Terraform provider configuration.
+- Updated README.md to reference RUNBOOK.md for full bootstrap workflow.
+
+### Fixed
+- `unzip` commands in Dockerfile now use `-o` flag to prevent interactive prompts on
+  file conflicts.
+- `step` CLI extraction now uses `find` to locate the binary regardless of archive structure.
+
 ## [0.1.0] — 2026-06-07
 
 ### Added
