@@ -72,11 +72,12 @@ RUN curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VA
     && vault version
 
 # ── step CLI ────────────────────────────────────────────────────────────────
-RUN curl -fsSL "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/step_linux_${STEP_VERSION}_${ARCH}.tar.gz" \
+RUN mkdir -p /tmp/step-extract \
+    && curl -fsSL "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/step_linux_${STEP_VERSION}_${ARCH}.tar.gz" \
         -o /tmp/step.tar.gz \
-    && tar -xzf /tmp/step.tar.gz -C /tmp/ \
-    && mv /tmp/step_*/step /usr/local/bin/ \
-    && rm -rf /tmp/step_* \
+    && tar -xzf /tmp/step.tar.gz -C /tmp/step-extract/ \
+    && find /tmp/step-extract -name "step" -type f -exec mv {} /usr/local/bin/ \; \
+    && rm -rf /tmp/step* \
     && step version
 
 # ── Ansible Galaxy collections (blueprints.*) ───────────────────────────────
