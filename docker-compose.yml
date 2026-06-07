@@ -40,6 +40,9 @@ services:
         read_only: true
       # Mount the entire workspace (~/workspace) so all IaC code is available inside.
       # This includes vernify, iac-foundry, and all subprojects.
+      # Docker compose does not expand ~, so export BOOTSTRAP_WORKSPACE_PATH first:
+      #   export BOOTSTRAP_WORKSPACE_PATH=$HOME/workspace
+      #   docker compose run --rm bootstrap
       - type: bind
-        source: ${BOOTSTRAP_WORKSPACE_PATH:-~/workspace}
+        source: ${BOOTSTRAP_WORKSPACE_PATH}
         target: /workspace
