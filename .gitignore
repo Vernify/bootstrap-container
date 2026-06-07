@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Vernify Bootstrap Container — .gitignore
+# ---------------------------------------------------------------------------
+
+# Secret files — NEVER commit filled-in env files
+.env
+*.env
+.env.*
+!.env.example
+
+# SSH private keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_vernify_*
+
+# Docker artefacts
+.docker/
+
+# Workspace directory (operator's working files inside the container)
+workspace/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/

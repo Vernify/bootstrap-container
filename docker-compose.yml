@@ -1,0 +1,44 @@
+# ===========================================================================
+# Vernify Bootstrap Container — Docker Compose convenience wrapper
+#
+# Usage:
+#   source .env        # load secrets from your filled-in .env file
+#   docker compose run --rm bootstrap
+#
+# Or to skip the compose file entirely:
+#   docker run --rm -it \
+#     --env-file <(env | grep -E '^(PROXMOX|TFC|GIT|STEP|BOOTSTRAP|VAULT)') \
+#     -v ~/.ssh/id_vernify_bootstrap:/run/secrets/bootstrap_ssh_key:ro \
+#     vernify/bootstrap-container
+# ===========================================================================
+services:
+  bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vernify/bootstrap-container:local
+    stdin_open: true
+    tty: true
+    # Pass through all bootstrap secrets from the host environment.
+    # Values are read from the shell that ran `source .env`.
+    environment:
+      - PROXMOX_URL
+      - PROXMOX_TOKEN_ID
+      - PROXMOX_TOKEN_SECRET
+      - TFC_TOKEN
+      - GIT_PAT
+      - STEP_CA_PROVISIONER_PASSWORD
+      - BOOTSTRAP_SSH_PRIVATE_KEY_B64
+      - VAULT_ADDR
+      - VAULT_TOKEN
+    volumes:
+      # Mount the operator SSH private key for Ansible VM access.
+      # Adjust the host path to match your actual key location.
+      - type: bind
+        source: ${BOOTSTRAP_SSH_KEY_HOST_PATH:-~/.ssh/id_vernify_bootstrap}
+        target: /run/secrets/bootstrap_ssh_key
+        read_only: true
+      # Mount a workspace directory so IaC files persist across container runs.
+      - type: bind
+        source: ${BOOTSTRAP_WORKSPACE_PATH:-./workspace}
+        target: /workspace

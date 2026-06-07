@@ -1,0 +1,46 @@
+---
+# ---------------------------------------------------------------------------
+# Vernify Bootstrap Container — Ansible Galaxy requirements
+#
+# All blueprints.* collections are pinned to a specific Git ref.
+# During Phase 0 the container is built from these refs; update the ref
+# to consume a newer collection version and rebuild the image.
+# ---------------------------------------------------------------------------
+collections:
+  - name: blueprints.common
+    source: https://github.com/iac-foundry/ansible-collection-common
+    type: git
+    version: main
+
+  - name: blueprints.vault
+    source: https://github.com/iac-foundry/ansible-collection-vault
+    type: git
+    version: main
+
+  - name: blueprints.vault_integrations
+    source: https://github.com/iac-foundry/ansible-collection-vault-integrations
+    type: git
+    version: main
+
+  - name: blueprints.jenkins
+    source: https://github.com/iac-foundry/ansible-collection-jenkins
+    type: git
+    version: main
+
+  - name: blueprints.jenkins_integrations
+    source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
+    type: git
+    version: main
+
+  - name: blueprints.graylog
+    source: https://github.com/iac-foundry/ansible-collection-graylog
+    type: git
+    version: main
+
+  # HashiCorp Vault lookup / connection plugin (secret retrieval post Phase 3)
+  - name: community.hashi_vault
+    version: ">=6.0.0"
+
+  # General utilities
+  - name: community.general
+    version: ">=9.0.0"
