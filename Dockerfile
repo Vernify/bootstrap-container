@@ -53,21 +53,21 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 # ── packer ──────────────────────────────────────────────────────────────────
 RUN curl -fsSL "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_${ARCH}.zip" \
         -o /tmp/packer.zip \
-    && unzip /tmp/packer.zip -d /usr/local/bin/ \
+    && unzip -o /tmp/packer.zip -d /usr/local/bin/ \
     && rm /tmp/packer.zip \
     && packer version
 
 # ── terraform ───────────────────────────────────────────────────────────────
 RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip" \
         -o /tmp/terraform.zip \
-    && unzip /tmp/terraform.zip -d /usr/local/bin/ \
+    && unzip -o /tmp/terraform.zip -d /usr/local/bin/ \
     && rm /tmp/terraform.zip \
     && terraform version
 
 # ── vault CLI ───────────────────────────────────────────────────────────────
 RUN curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${ARCH}.zip" \
         -o /tmp/vault.zip \
-    && unzip /tmp/vault.zip -d /usr/local/bin/ \
+    && unzip -o /tmp/vault.zip -d /usr/local/bin/ \
     && rm /tmp/vault.zip \
     && vault version
 
