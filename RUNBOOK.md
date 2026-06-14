@@ -105,67 +105,162 @@ exit
 
 ## Phase 1 — Packer base template
 
-> **What:** Build the Proxmox VM template (ubuntu-base + container-host variants).
+> **What:** Build thin, reusable Ubuntu 22.04 and 24.04 VM templates in Proxmox.
 >
-> **Uses:** Packer, Proxmox API, `blueprints.packer` (stub — not yet implemented).
+> **Uses:** Packer, Proxmox API, cloud-init, Ansible.
 >
-> **Produces:** A reusable VM template in Proxmox that every later phase clones from.
+> **Produces:** Two VM templates that every later phase clones from:
+> - `ubuntu-22.04-template` (~20 GB)
+> - `ubuntu-24.04-template` (~20 GB)
+>
+> **Design philosophy:** Templates are thin — only essential packages (Python, SSH, qemu-guest-agent). All downstream customization (Docker, Vault, Jenkins, services) happens via Terraform and Ansible on cloned VMs.
 
 ### Prerequisites for Phase 1
 
 - Bootstrap container is built and `.env` is filled in
-- Proxmox is running and you can access the web UI
-- A Proxmox datastore (e.g., `local`) where the template will be stored
+- Proxmox is running and you can access the web UI (https://your-proxmox-host:8006)
+- Your Proxmox node name and storage pool are configured in `.env` (defaults: `pve` and `local`)
+- Internet access to download Ubuntu ISOs and packages
 
-### Step 1: Prepare the Packer template
+### How to Build
 
-The Packer HCL is located in `~/workspace/iac-foundry/packer-template-proxmox/`.
-Currently it is a **stub** — you must author the actual template.
-
-Inside the bootstrap container:
+**Start the bootstrap container:**
 
 ```bash
+cd ~/workspace/vernify/bootstrap-container
 source .env
-docker compose run --rm bootstrap
+docker compose run -it --rm bootstrap
+```
 
-# Inside the container:
+You're now inside the container with Proxmox credentials loaded.
+
+**Navigate to the Packer templates:**
+
+```bash
 cd /workspace/iac-foundry/packer-template-proxmox
-
-# Review the existing structure
-ls -la
-
-# Author the ubuntu-base.pkr.hcl template (see roadmap for guidance)
-# This should use the blueprints.packer role and produce a Proxmox template.
 ```
 
-**Reference:** Check the VMware packer template for patterns:
-`~/workspace/iac-foundry/packer-template-vmware/`
-
-### Step 2: Initialize and validate
+**Verify the templates work (optional but recommended):**
 
 ```bash
-# Inside the container:
+bash verify-templates.sh
+```
+
+This will check that Packer and the plugin are installed correctly. Output should show ✅ for all checks.
+
+**Create variable files for Packer (Ubuntu-version-specific only):**
+
+Proxmox credentials are automatically read from your bootstrap `.env`, so just copy the examples:
+
+```bash
+# No editing needed — these only contain Ubuntu version specifics
+cp ubuntu-22.04.pkrvars.hcl.example ubuntu-22.04.pkrvars.hcl
+cp ubuntu-24.04.pkrvars.hcl.example ubuntu-24.04.pkrvars.hcl
+```
+
+The Packer templates automatically read these from `.env`:
+- `PROXMOX_URL` → Proxmox API endpoint
+- `PROXMOX_USER` → Proxmox username
+- `PROXMOX_PASSWORD` → Proxmox password
+- `PROXMOX_NODE` → Proxmox node (defaults to `pve`)
+- `PROXMOX_STORAGE` → Storage pool (defaults to `local`)
+
+**No duplication needed!**
+
+**Initialize Packer:**
+
+```bash
 packer init proxmox/
-packer validate proxmox/ubuntu-base.pkr.hcl
 ```
 
-### Step 3: Build the template
+This downloads the Proxmox plugin (one-time, ~30 seconds).
+
+**Download ISOs to Proxmox storage:**
+
+Packer references ISOs already present on the Proxmox node — it does not upload from the bootstrap container. Run the download script once per ISO; it skips if already present.
 
 ```bash
-# Inside the container:
-packer build proxmox/ubuntu-base.pkr.hcl
+# Ubuntu 22.04
+bash download-iso.sh \
+  ubuntu-22.04.5-live-server-amd64.iso \
+  https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso \
+  9bc6028870aef3f74f4e16b900008179e78b130e6b0b9a140635434a46aa98b0
 
-# Watch the build progress in the Proxmox web UI.
-# Once complete, the template will appear in Proxmox under:
-#   Datacenter → Nodes → [node] → Qemu → [template-name]
+# Ubuntu 24.04
+bash download-iso.sh \
+  ubuntu-24.04.4-live-server-amd64.iso \
+  https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso \
+  e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433
 ```
 
-### Step 4: Verify in Proxmox
+To check the latest ISO filenames and checksums:
 
-- Log into Proxmox web UI
-- Navigate to **Datacenter** → **Nodes** → your node
-- Look for the new VM template under **Qemu**
-- Verify it has the correct size and resources
+```bash
+# 22.04
+curl -s https://releases.ubuntu.com/22.04/SHA256SUMS | grep "live-server-amd64.iso"
+
+# 24.04
+curl -s https://releases.ubuntu.com/24.04/SHA256SUMS | grep "live-server-amd64.iso"
+```
+
+**Build the templates:**
+
+```bash
+# Ubuntu 22.04 template (~10-12 minutes)
+packer build -var-file=ubuntu-22.04.pkrvars.hcl proxmox/
+
+# Ubuntu 24.04 template (~10-12 minutes)
+packer build -var-file=ubuntu-24.04.pkrvars.hcl proxmox/
+```
+
+Note: These are thin templates. Downstream customization (Docker, services, etc.) is handled by Terraform modules and Ansible playbooks in later phases.
+
+**Monitor the build:**
+
+While Packer is running, watch the Proxmox web UI at `https://your-proxmox-host:8006`:
+1. You'll see a temporary VM appear (e.g., `ubuntu-22.04`)
+2. It will boot and run cloud-init
+3. Ansible will run provisioning tasks
+4. The VM will shut down and convert to a template
+
+**Verify templates are created:**
+
+After all builds complete, log into Proxmox and navigate to:
+**Datacenter** → **Nodes** → **[your-node]** → **Qemu**
+
+You should see two new templates:
+- ✅ `ubuntu-22.04-template` (~20 GB)
+- ✅ `ubuntu-24.04-template` (~20 GB)
+
+### Troubleshooting Phase 1
+
+**"Waiting for SSH" timeout:**
+- Check the Proxmox console for boot messages
+- Increase `ssh_timeout` in your `.pkrvars.hcl` to `30m`
+- Ensure the HTTP server (port 8802+) is accessible from the VM
+
+**"ISO checksum mismatch":**
+- Verify the correct checksum from https://releases.ubuntu.com/
+- Update `iso_checksum` in your `.pkrvars.hcl`
+- Clear Packer cache: `rm -rf ~/.cache/packer`
+
+**"Proxmox API connection failed":**
+- Double-check `PROXMOX_URL`, `PROXMOX_USER`, `PROXMOX_PASSWORD` in `.env`
+- Verify your Proxmox user has API permissions
+- Test connectivity: `curl -k "$PROXMOX_URL/api2/json/version"`
+
+**Template appears with 0 GB size:**
+- Check Proxmox storage pool has free space
+- Check `/var/log/syslog` on the Proxmox host for disk errors
+- Delete the empty template and retry
+
+### Next Steps
+
+✅ **Phase 1 complete** — templates are ready for cloning.
+
+Proceed to **Phase 2** to create TFC workspaces and Terraform modules for VM provisioning.
+
+See the main [roadmap](../roadmap/HOMELAB_GREENFIELD_BOOTSTRAP.md) for Phase 2+ instructions.
 
 ---
 

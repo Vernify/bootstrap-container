@@ -37,8 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
+        sshpass \
         unzip \
         wget \
+        xorriso \
     && rm -rf /var/lib/apt/lists/*
 
 # ── ansible-core (via pip into a venv to avoid system-pip conflicts) ────────
