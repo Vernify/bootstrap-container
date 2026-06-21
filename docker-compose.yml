@@ -23,12 +23,17 @@ services:
       - PROXMOX_URL
       - PROXMOX_USER
       - PROXMOX_PASSWORD
+      - PROXMOX_NODE
+      - PROXMOX_STORAGE
+      - PROXMOX_ISO_STORAGE
       - TFC_TOKEN
       - GIT_PAT
       - STEP_CA_PROVISIONER_PASSWORD
       - BOOTSTRAP_SSH_PRIVATE_KEY_B64
       - VAULT_ADDR
       - VAULT_TOKEN
+      - PKR_VAR_vm_name
+      - PKR_VAR_iso_filename
     volumes:
       # Mount the operator SSH private key for Ansible VM access.
       # Adjust the host path to match your actual key location.

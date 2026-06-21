@@ -269,62 +269,67 @@ See the main [roadmap](../roadmap/HOMELAB_GREENFIELD_BOOTSTRAP.md) for Phase 2+ 
 > **What:** Create Terraform Cloud workspaces and a Proxmox VM module so we can declaratively
 > provision VMs.
 >
-> **Uses:** Terraform, TFC API, `blueprints.terraform` (not yet implemented).
+> **Uses:** Terraform (pinned, containerised), TFC (org `Vernify`), the `bpg/proxmox` provider.
 >
-> **Produces:** TFC workspaces for Vernify + a reusable Proxmox VM module.
+> **Produces:** the `dev01` TFC workspace + a running `dev01` VM cloned from the Phase-1
+> template — the host the Saicom Postgres remediation is tested against.
+
+This phase is concrete. Reusable logic lives in two **iac-foundry** modules; Vernify holds
+small per-host consumer repos that consume them (full map in
+`vernify/roadmap/PLATFORM_STATE_AND_CONVENTIONS.md`):
+
+| Repo | Role |
+|---|---|
+| `iac-foundry/terraform-proxmox-vm` | module: clone a template into a VM |
+| `iac-foundry/terraform-tfe-workspace` | module: declare a TFC workspace |
+| `vernify/terraform-workspaces-deploy` | runs in the `bootstrap` workspace; creates host workspaces |
+| `vernify/terraform-dev01-deploy` | runs in the `dev01` workspace; provisions the VM |
+
+**Execution model:** Proxmox is internal, so TFC cloud runners can't reach it — workspaces keep
+state + variables in TFC but `plan`/`apply` run locally. Each repo ships a pinned Terraform
+toolchain via its own `docker-compose.yml` (we do **not** rely on locally-installed tools). The
+compose files map `TFC_TOKEN` → `TF_TOKEN_app_terraform_io` (cloud backend) and `TFE_TOKEN`
+(tfe provider), so there's no interactive login. True git-driven runs come later via a TFC agent
+(Phase 4+).
 
 ### Prerequisites for Phase 2
 
-- Phase 1 Packer template is built and present in Proxmox
-- Terraform Cloud team token is in `.env`
-- You have write access to the Vernify TFC organization
+- Phase 1 Packer template `ubuntu-24.04-template` is present in Proxmox
+- `.env` filled in (TFC_TOKEN, PROXMOX_*) and the `bootstrap` TFC workspace exists (org `Vernify`)
+- The two iac-foundry modules are pushed+tagged, **or** use the sibling-checkout `source`
+  override for first use (see each consumer repo's README)
 
-### Step 1: Create Terraform modules
-
-The Terraform code is in `~/workspace/vernify/platform-infrastructure/` (or similar — create if needed).
-
-Inside the bootstrap container:
+### Step 1: Create the host workspaces (runs in the `bootstrap` workspace)
 
 ```bash
-source .env
-docker compose run --rm bootstrap
-
-cd /workspace/vernify
-
-# Create the terraform directory structure
-mkdir -p terraform/modules/proxmox-vm
-mkdir -p terraform/workspaces/main
-
-# Author the TFC workspace module and the Proxmox VM module
-# Reference iac-foundry terraform examples
+source ~/workspace/vernify/bootstrap-container/.env
+cd /workspace/vernify/terraform-workspaces-deploy
+docker compose run --rm terraform init
+docker compose run --rm terraform plan      # creates the dev01 workspace
+docker compose run --rm terraform apply
 ```
 
-### Step 2: Initialize Terraform
+### Step 2: Provision dev01 (runs in the `dev01` workspace)
 
 ```bash
-# Inside the container:
-cd /workspace/vernify/terraform
-terraform init
-
-# Terraform will prompt for TFC organization/workspace names
-# Use org: Vernify, workspace: main
+cd /workspace/vernify/terraform-dev01-deploy
+export TF_VAR_ssh_public_keys='["<your bootstrap SSH public key>"]'
+docker compose run --rm terraform init
+docker compose run --rm terraform plan      # review the VM to be created
+docker compose run --rm terraform apply
+docker compose run --rm terraform output -raw dev01_ipv4_address
 ```
 
-### Step 3: Plan and apply
+### Step 3: Verify
 
-```bash
-# Inside the container:
-terraform plan
+- In `https://app.terraform.io/app/Vernify`: the `bootstrap` and `dev01` workspaces exist.
+- In Proxmox: the `dev01` VM is running, cloned from `ubuntu-24.04-template`.
+- `ssh ubuntu@<dev01-ip>` works with your bootstrap key.
 
-# Review the plan (should create workspaces and variables)
-terraform apply
-```
+### Step 4: Hand off to the Postgres work
 
-### Step 4: Verify in TFC
-
-- Log into https://app.terraform.io/app/Vernify
-- Verify new workspaces are created
-- Verify variable sets are populated with Proxmox token, etc.
+Put `dev01`'s IP into `saicom/Saicom/mosaic-infra/inventories/sandbox/hosts.yml` and dry-run the
+role: `ansible-playbook -i inventories/sandbox/hosts.yml playbooks/postgresql.yml --check --diff`.
 
 ---
 
