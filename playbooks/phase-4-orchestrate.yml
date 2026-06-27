@@ -1,0 +1,300 @@
+---
+# Phase 4 Orchestration Playbook — CI Core (build01)
+# Provisions build01, deploys Jenkins, configures Vault AppRole integration
+# Addresses P1-5 (token renewal), P1-10/11/12 (firewall, communication matrix, JNLP)
+
+- name: "Phase 4 — CI Core (build01) Orchestration"
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    proxmox_endpoint: "{{ lookup('env', 'PROXMOX_ENDPOINT') }}"
+    proxmox_token: "{{ lookup('env', 'PROXMOX_TOKEN') }}"
+    jenkins_admin_token: "{{ lookup('env', 'JENKINS_ADMIN_TOKEN') }}"
+
+    build01_ip: "192.168.22.52"
+    sec01_ip: "192.168.22.51"
+    proxmox_gateway: "192.168.22.1"
+    vernify_search_domain: "vernify.internal"
+
+    vault_endpoint: "https://sec01.vernify.internal:8200"
+    step_ca_endpoint: "https://sec01.vernify.internal:9000"
+    vault_cacert: "/etc/ssl/certs/step-ca-root.crt"
+
+  pre_tasks:
+    - name: "Pre-flight: Verify Phase 3 completed (Vault unsealed)"
+      uri:
+        url: "{{ vault_endpoint }}/v1/sys/health"
+        method: GET
+        validate_certs: no
+      register: vault_health_check
+      failed_when: vault_health_check.json.sealed | default(true)
+      retries: 5
+      delay: 5
+
+  tasks:
+    # ============================================================
+    # STEP 1: Terraform Provision build01
+    # ============================================================
+    - name: "Step 1: Provision build01 VM"
+      terraform:
+        project_path: "/workspace/terraform-build01-deploy"
+        state: present
+        variables:
+          proxmox_password: "{{ proxmox_token }}"
+          vm_name: "build01"
+          vm_cores: 4
+          vm_memory: 8192
+          disk_size: 40
+          ipv4_address: "{{ build01_ip }}/24"
+          ipv4_gateway: "{{ proxmox_gateway }}"
+          search_domain: "{{ vernify_search_domain }}"
+          tags:
+            - "phase-4"
+            - "ci"
+            - "build01"
+      register: terraform_build01_output
+      retries: 3
+      delay: 10
+
+    - name: "Extract build01 IP"
+      set_fact:
+        build01_ip_actual: "{{ terraform_build01_output.outputs.build01_ipv4_address.value | split('/') | first }}"
+
+    - name: "Wait for build01 SSH"
+      wait_for:
+        host: "{{ build01_ip_actual }}"
+        port: 22
+        state: started
+        delay: 10
+        timeout: 300
+
+    - name: "Add build01 to inventory"
+      add_host:
+        name: build01
+        ansible_host: "{{ build01_ip_actual }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: /root/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+    # ============================================================
+    # STEP 2: Configure DNS on build01
+    # ============================================================
+    - name: "Configure hosts file on build01"
+      copy:
+        content: |
+          127.0.0.1 localhost
+          ::1 ip6-localhost ip6-loopback
+
+          # Vernify internal network (Phase 3-5)
+          {{ sec01_ip }} sec01 sec01.vernify.internal
+          {{ build01_ip }} build01 build01.vernify.internal
+          192.168.22.53 agent01 agent01.vernify.internal
+
+          # Service FQDNs
+          {{ sec01_ip }} vault vault.sec01 vault.sec01.vernify.internal
+          {{ sec01_ip }} step-ca ca.sec01 ca.sec01.vernify.internal
+          {{ build01_ip }} jenkins jenkins.build01 jenkins.build01.vernify.internal
+        dest: /etc/hosts
+        mode: "0644"
+        owner: root
+        group: root
+      delegate_to: build01
+
+    # ============================================================
+    # STEP 3: Issue TLS Certificate for Jenkins (P0-5 SAN fix)
+    # ============================================================
+    - name: "Step 3: Issue Jenkins TLS certificate with proper SANs"
+      include_role:
+        name: blueprints.step_ca.issue_certificate
+        apply:
+          delegate_to: build01
+      vars:
+        ca_endpoint: "{{ step_ca_endpoint }}"
+        ca_fingerprint: "{{ lookup('env', 'STEP_CA_ROOT_FINGERPRINT', default='') }}"
+        cert_cn: "jenkins.build01.vernify.internal"
+        cert_sans:
+          - "jenkins"
+          - "jenkins.build01"
+          - "jenkins.build01.vernify.internal"
+          - "{{ build01_ip }}"
+        cert_output_dir: "/etc/ssl/certs"
+
+    # ============================================================
+    # STEP 4: Deploy Jenkins Container
+    # ============================================================
+    - name: "Step 4: Deploy Jenkins container"
+      include_role:
+        name: blueprints.jenkins.container_server
+        apply:
+          delegate_to: build01
+      vars:
+        jenkins_image_tag: "lts-jdk21"
+        jenkins_tls_cert_path: "/etc/ssl/certs/jenkins.build01.vernify.internal.crt"
+        jenkins_tls_key_path: "/etc/ssl/certs/jenkins.build01.vernify.internal.key"
+        jenkins_admin_token: "{{ jenkins_admin_token }}"
+        jenkins_listen_port: 8443
+        jenkins_home: "/opt/jenkins"
+
+    # ============================================================
+    # STEP 5: Configure Vault AppRole in Jenkins (P1-5 token renewal doc)
+    # ============================================================
+    - name: "Step 5: Retrieve Jenkins AppRole from Vault"
+      set_fact:
+        jenkins_approle: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/ci/jenkins/approle', url=vault_endpoint, auth_method='token', token=lookup('env', 'VAULT_ROOT_TOKEN', default=''), validate_certs=false) }}"
+      no_log: true
+
+    - name: "Configure Vault plugin in Jenkins (P1-5: auto-renewal enabled)"
+      include_role:
+        name: blueprints.jenkins_integrations.vault_auth
+        apply:
+          delegate_to: build01
+      vars:
+        vault_endpoint: "{{ vault_endpoint }}"
+        vault_cacert: "{{ vault_cacert }}"
+        vault_role_id: "{{ jenkins_approle.role_id }}"
+        vault_secret_id: "{{ jenkins_approle.secret_id }}"
+        jenkins_home: "/opt/jenkins"
+        # P1-5: Document auto-renewal config
+        enable_token_auto_renewal: true
+
+    # ============================================================
+    # STEP 6: Seed Job DSL Pipelines
+    # ============================================================
+    - name: "Step 6: Seed Job DSL pipelines (Packer, Terraform, Ansible)"
+      block:
+        - name: "Wait for Jenkins to be ready"
+          uri:
+            url: "https://build01.vernify.internal:8443/api/json"
+            method: GET
+            user: admin
+            password: "{{ jenkins_admin_token }}"
+            validate_certs: no
+          retries: 15
+          delay: 5
+
+        - name: "Create Packer image build job (Job DSL)"
+          shell: |
+            cat > /tmp/packer-job.groovy << 'EOF'
+            job('packer-image-build') {
+              description 'Build Proxmox VM templates via Packer'
+              label('agent01')
+              steps {
+                shell('''
+                  export PROXMOX_TOKEN=$(vault kv get -field=value secret/data/infra/proxmox/api-token)
+                  cd /workspace/packer-template-proxmox
+                  packer build -var "proxmox_token=$PROXMOX_TOKEN" template.pkr.hcl
+                ''')
+              }
+            }
+            EOF
+            java -jar /opt/jenkins/jenkins-cli.jar \
+              -s https://build01.vernify.internal:8443 \
+              -auth admin:{{ jenkins_admin_token }} \
+              create-job packer-image-build < /tmp/packer-job.groovy
+          delegate_to: build01
+          no_log: true
+
+        - name: "Create Terraform plan job (Job DSL)"
+          shell: |
+            cat > /tmp/terraform-plan-job.groovy << 'EOF'
+            job('terraform-plan') {
+              description 'Plan Vernify infrastructure changes'
+              label('agent01')
+              steps {
+                shell('''
+                  export TFC_TOKEN=$(vault kv get -field=value secret/data/infra/terraform-cloud/team-token)
+                  cd /workspace/terraform-sec01-deploy
+                  terraform plan
+                ''')
+              }
+            }
+            EOF
+            java -jar /opt/jenkins/jenkins-cli.jar \
+              -s https://build01.vernify.internal:8443 \
+              -auth admin:{{ jenkins_admin_token }} \
+              create-job terraform-plan < /tmp/terraform-plan-job.groovy
+          delegate_to: build01
+          no_log: true
+
+    # ============================================================
+    # STEP 7: Configure Firewall (P1-10, P1-11, P1-12)
+    # ============================================================
+    - name: "Step 7: Configure firewall on build01 (P1-10, P1-12 JNLP)"
+      block:
+        - name: "Enable UFW"
+          shell: "ufw --force enable && ufw default deny incoming"
+          delegate_to: build01
+          become: yes
+
+        - name: "Allow SSH"
+          ufw:
+            rule: allow
+            port: "22"
+            proto: tcp
+          delegate_to: build01
+          become: yes
+
+        - name: "Allow Jenkins HTTPS"
+          ufw:
+            rule: allow
+            port: "8443"
+            proto: tcp
+            from_ip: "192.168.22.0/24"
+          delegate_to: build01
+          become: yes
+
+        - name: "Allow JNLP (TCP 50000, P1-12 JNLP port specification)"
+          ufw:
+            rule: allow
+            port: "50000"
+            proto: tcp
+            from_ip: "192.168.22.0/24"
+          delegate_to: build01
+          become: yes
+
+        - name: "Allow outbound to Vault"
+          ufw:
+            rule: allow
+            port: "8200"
+            proto: tcp
+            direction: out
+            to_ip: "{{ sec01_ip }}"
+          delegate_to: build01
+          become: yes
+
+    # ============================================================
+    # STEP 8: Verification
+    # ============================================================
+    - name: "Step 8: Verify Jenkins deployment"
+      uri:
+        url: "https://build01.vernify.internal:8443/api/json"
+        method: GET
+        user: admin
+        password: "{{ jenkins_admin_token }}"
+        validate_certs: no
+      register: jenkins_verify
+
+    - name: "✓ Phase 4 Complete"
+      debug:
+        msg: |
+          ========== PHASE 4 COMPLETE ==========
+
+          CI Core (build01) is online:
+          - ✓ build01 VM provisioned (IP: {{ build01_ip_actual }})
+          - ✓ Jenkins container deployed + TLS configured
+          - ✓ Vault AppRole integration enabled
+          - ✓ Job DSL pipelines seeded
+          - ✓ Firewall configured (UFW)
+          - ✓ JNLP listener on port 50000 (P1-12)
+
+          Next Steps (Phase 5):
+          1. Provision agent01 VM
+          2. Deploy Jenkins agent + Vault agent
+          3. Install build toolchain (Packer, Terraform, Ansible)
+
+          Verification:
+          - https://build01.vernify.internal:8443/
+          - Jenkins UI should show jobs: packer-image-build, terraform-plan
+          - Agent connection will show online after Phase 5
+
+          =====================================

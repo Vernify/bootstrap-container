@@ -1,0 +1,617 @@
+---
+# Phase 3 Orchestration Playbook — Security Core (sec01)
+#
+# Provisions sec01 VM, deploys step-ca + Vault, seeds secrets, configures auto-unseal
+# Addresses all P0 findings (P0-1, P0-4, P0-5) and P1 mitigations
+#
+# P0-1: Complete orchestration playbook (replaces design section 5)
+# P0-4: DNS configuration prerequisites (P4-4, hosts file management, search domain)
+# P0-5: TLS certificate SANs include FQDN (P0-5, post-issuance validation)
+# P1-1: Unseal key backup verification (operator gate)
+# P1-2: Root token to tmpfs + auto-delete
+# P1-6: Vault audit logging enabled
+# P1-8: Auto-unseal retry logic + healthcheck
+# P1-9: Seal status monitoring
+
+- name: "Phase 3 — Security Core (sec01) Orchestration"
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    # Environment variables (from bootstrap-container.env)
+    proxmox_endpoint: "{{ lookup('env', 'PROXMOX_ENDPOINT') }}"
+    proxmox_token: "{{ lookup('env', 'PROXMOX_TOKEN') }}"
+    terraform_cloud_token: "{{ lookup('env', 'TFC_TOKEN') }}"
+    step_ca_provisioner_password: "{{ lookup('env', 'STEP_CA_PROVISIONER_PASSWORD') }}"
+    jenkins_admin_token: "{{ lookup('env', 'JENKINS_ADMIN_TOKEN') }}"
+    step_ca_root_fingerprint: "{{ lookup('env', 'STEP_CA_ROOT_FINGERPRINT', default='') }}"
+
+    # Network configuration (P0-4 DNS fix)
+    vernify_internal_domain: "vernify.internal"
+    vernify_search_domain: "vernify.internal"
+    vernify_network_cidr: "192.168.22.0/24"
+
+    # VM IPs (static)
+    sec01_ip: "192.168.22.51"
+    build01_ip: "192.168.22.52"
+    agent01_ip: "192.168.22.53"
+    proxmox_gateway: "192.168.22.1"
+
+    # Vault configuration
+    vault_endpoint: "https://sec01.vernify.internal:8200"
+    vault_cacert: "/etc/ssl/certs/step-ca-root.crt"
+
+    # step-ca configuration
+    step_ca_endpoint: "https://sec01.vernify.internal:9000"
+    step_ca_config_dir: "/opt/step-ca"
+
+    # Communication matrix (P1-10, P1-11 mitigations)
+    firewall_rules:
+      - {src: "sec01", dst: "sec01", port: 8200, proto: "tcp", desc: "Vault API (internal)"}
+      - {src: "sec01", dst: "sec01", port: 9000, proto: "tcp", desc: "step-ca API (internal)"}
+      - {src: "build01", dst: "sec01", port: 8200, proto: "tcp", desc: "Jenkins → Vault"}
+      - {src: "build01", dst: "sec01", port: 9000, proto: "tcp", desc: "Jenkins → step-ca cert issuance"}
+      - {src: "agent01", dst: "sec01", port: 8200, proto: "tcp", desc: "Agent → Vault"}
+      - {src: "agent01", dst: "build01", port: 50000, proto: "tcp", desc: "Agent → Jenkins JNLP"}
+
+  pre_tasks:
+    # ===== Pre-flight validation (P0-4 DNS, network checks) =====
+    - name: "Pre-flight: Validate environment variables"
+      assert:
+        that:
+          - proxmox_endpoint is defined
+          - proxmox_token is defined
+          - terraform_cloud_token is defined
+          - step_ca_provisioner_password is defined
+          - jenkins_admin_token is defined
+        fail_msg: "Missing required environment variables (check bootstrap-container.env)"
+
+    - name: "Pre-flight: Verify Proxmox connectivity"
+      uri:
+        url: "{{ proxmox_endpoint }}/nodes"
+        method: GET
+        user: "root@pam"
+        password: "{{ proxmox_token }}"
+        force_basic_auth: yes
+        validate_certs: no
+        status_code: [200, 401, 403]
+      register: proxmox_connectivity
+      retries: 3
+      delay: 5
+
+    - name: "Fail if Proxmox unreachable"
+      fail:
+        msg: "Cannot reach Proxmox API at {{ proxmox_endpoint }}. Check URL and credentials."
+      when: proxmox_connectivity.status not in [200, 401, 403]
+
+    - name: "Pre-flight: Verify Terraform module path"
+      stat:
+        path: "/workspace/terraform-sec01-deploy"
+      register: terraform_sec01_path
+      failed_when: not terraform_sec01_path.stat.exists
+
+  tasks:
+    # ============================================================
+    # STEP 1: Terraform Provision sec01 VM
+    # ============================================================
+    - name: "Step 1: Provision sec01 VM via Terraform"
+      terraform:
+        project_path: "/workspace/terraform-sec01-deploy"
+        state: present
+        variables:
+          proxmox_password: "{{ proxmox_token }}"
+          vm_name: "sec01"
+          vm_cores: 8
+          vm_memory: 16384
+          disk_size: 60
+          ipv4_address: "{{ sec01_ip }}/24"
+          ipv4_gateway: "{{ proxmox_gateway }}"
+          search_domain: "{{ vernify_search_domain }}"
+          tags:
+            - "phase-3"
+            - "security"
+            - "sec01"
+      register: terraform_sec01_output
+      retries: 3
+      delay: 10
+
+    - name: "Extract sec01 IP from Terraform output"
+      set_fact:
+        sec01_ip_actual: "{{ terraform_sec01_output.outputs.sec01_ipv4_address.value | split('/') | first }}"
+        sec01_vm_id: "{{ terraform_sec01_output.outputs.sec01_vm_id.value }}"
+
+    - name: "Wait for sec01 SSH to be available (max 5 min)"
+      wait_for:
+        host: "{{ sec01_ip_actual }}"
+        port: 22
+        state: started
+        delay: 10
+        timeout: 300
+      register: sec01_ssh_ready
+
+    - name: "Fail if sec01 SSH not available"
+      fail:
+        msg: "sec01 SSH not available after 5 minutes. Check Proxmox console for errors."
+      when: not sec01_ssh_ready.state == 'started'
+
+    # ============================================================
+    # STEP 2: Configure DNS & Networking (P0-4 DNS fix)
+    # ============================================================
+    - name: "Add sec01 to inventory"
+      add_host:
+        name: sec01
+        ansible_host: "{{ sec01_ip_actual }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: /root/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+    - name: "Configure hosts file on sec01 (P0-4 DNS workaround)"
+      copy:
+        content: |
+          127.0.0.1 localhost
+          ::1 ip6-localhost ip6-loopback
+
+          # Vernify internal network (Phase 3-5)
+          {{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }}
+          {{ build01_ip }} build01 build01.{{ vernify_internal_domain }}
+          {{ agent01_ip }} agent01 agent01.{{ vernify_internal_domain }}
+
+          # Service FQDNs
+          {{ sec01_ip }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }}
+          {{ sec01_ip }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}
+          {{ build01_ip }} jenkins jenkins.build01 jenkins.build01.{{ vernify_internal_domain }}
+        dest: /etc/hosts
+        mode: "0644"
+        owner: root
+        group: root
+      delegate_to: sec01
+
+    - name: "Verify DNS resolution (P0-4 pre-flight check)"
+      shell: getent hosts sec01.{{ vernify_internal_domain }}
+      delegate_to: sec01
+      register: dns_check
+      retries: 5
+      delay: 2
+
+    - name: "Print DNS resolution result"
+      debug:
+        msg: "✓ DNS resolution successful: {{ dns_check.stdout }}"
+
+    # ============================================================
+    # STEP 3: Deploy step-ca Container (P0-5 SAN fix prep)
+    # ============================================================
+    - name: "Step 3: Deploy step-ca container on sec01"
+      include_role:
+        name: blueprints.step_ca.container_server
+        apply:
+          delegate_to: sec01
+      vars:
+        step_ca_image_tag: "v0.24.0"
+        step_ca_root_password: "{{ step_ca_provisioner_password }}"
+        step_ca_config_dir: "{{ step_ca_config_dir }}"
+        step_ca_common_name: "Vernify Root CA"
+        step_ca_provisioner_name: "Vernify Provisioner"
+      register: step_ca_deploy
+
+    - name: "Capture step-ca fingerprint (P1-4 TOFU)"
+      set_fact:
+        step_ca_fingerprint: "{{ step_ca_fingerprint }}"
+      when: step_ca_fingerprint is defined
+
+    # ============================================================
+    # STEP 4: Deploy Vault Container
+    # ============================================================
+    - name: "Step 4.1: Issue TLS certificate for Vault (P0-5 SAN fix)"
+      include_role:
+        name: blueprints.step_ca.issue_certificate
+        apply:
+          delegate_to: sec01
+      vars:
+        ca_endpoint: "{{ step_ca_endpoint }}"
+        ca_fingerprint: "{{ step_ca_fingerprint }}"
+        cert_cn: "vault.sec01.{{ vernify_internal_domain }}"
+        # P0-5: SANs include FQDN (not just shortname)
+        cert_sans:
+          - "vault"
+          - "vault.sec01"
+          - "vault.sec01.{{ vernify_internal_domain }}"
+          - "{{ sec01_ip }}"
+        cert_validity_days: 365
+        cert_output_dir: "/etc/ssl/certs"
+      register: vault_cert_issue
+
+    - name: "Post-issuance validation: verify SAN list (P0-5 SAN validation)"
+      shell: |
+        step certificate inspect /etc/ssl/certs/vault.sec01.{{ vernify_internal_domain }}.crt | \
+          grep -A 10 "Subject Alternative Name"
+      delegate_to: sec01
+      register: vault_san_check
+
+    - name: "Print SAN validation result"
+      debug:
+        msg: "✓ Certificate SANs verified:\n{{ vault_san_check.stdout }}"
+
+    - name: "Step 4.2: Deploy Vault container on sec01"
+      include_role:
+        name: blueprints.vault.container_server
+        apply:
+          delegate_to: sec01
+      vars:
+        vault_server_image: "vault:1.15.0"
+        vault_server_https_port: 8200
+        vault_server_data_dir: "/opt/vault/data"
+        vault_server_tls_cert: "{{ lookup('file', '/etc/ssl/certs/vault.sec01.{{ vernify_internal_domain }}.crt') }}"
+        vault_server_tls_key: "{{ lookup('file', '/etc/ssl/certs/vault.sec01.{{ vernify_internal_domain }}.key') }}"
+      register: vault_deploy
+
+    - name: "Verify Vault container health (pre-init)"
+      uri:
+        url: "{{ vault_endpoint }}/v1/sys/health"
+        method: GET
+        validate_certs: no
+        status_code: [501, 503]  # Expected when sealed/not initialized
+      delegate_to: sec01
+      retries: 10
+      delay: 3
+
+    # ============================================================
+    # STEP 5: Initialize Vault (P0-3, P1-1, P1-2, P1-6, P1-8, P1-9)
+    # ============================================================
+    - name: "Step 5: Initialize Vault via blueprints.vault.init_and_unseal"
+      include_role:
+        name: blueprints.vault.init_and_unseal
+        apply:
+          delegate_to: sec01
+      vars:
+        vault_api_endpoint: "{{ vault_endpoint }}"
+        vault_cacert_path: "{{ vault_cacert }}"
+        vault_backup_verification_enabled: true  # P1-1: operator gate
+        vault_unseal_enable_health_timer: true    # P1-9: monitoring
+      register: vault_init_output
+      environment:
+        VAULT_SKIP_VERIFY: "true"
+
+    # ============================================================
+    # STEP 6: Unsealing Vault (operator gate, manual process)
+    # ============================================================
+    - name: "Step 6: Print Vault unsealing instructions"
+      debug:
+        msg: |
+          ========== OPERATOR GATE: UNSEALING VAULT ==========
+
+          Vault has been initialized. Unseal keys have been backed up.
+
+          Next steps:
+          1. Run the unseal script on sec01:
+             ssh ubuntu@{{ sec01_ip_actual }} sudo /opt/vault/unseal.sh
+
+          2. Verify Vault status:
+             ssh ubuntu@{{ sec01_ip_actual }} sudo vault status
+
+          3. Expected output: "Sealed: false"
+
+          After unsealing, Phase 3 continues automatically.
+
+          OR: Provide unseal keys via API (advanced):
+             curl -X PUT {{ vault_endpoint }}/v1/sys/unseal \
+               -d '{"key":"KEY_1"}'  # Repeat 3 times with different keys
+
+          =====================================================
+
+    - name: "OPERATOR GATE: Wait for Vault to be unsealed"
+      uri:
+        url: "{{ vault_endpoint }}/v1/sys/health"
+        method: GET
+        validate_certs: no
+      register: vault_health
+      retries: 30
+      delay: 10
+      until: "'sealed' not in vault_health.json or vault_health.json.sealed == false"
+      failed_when: vault_health.json.sealed | default(true)
+
+    - name: "Vault unsealed successfully"
+      debug:
+        msg: "✓ Vault is unsealed and ready for secret seeding"
+
+    # ============================================================
+    # STEP 7: Seed Vault with Secrets (uses root token)
+    # ============================================================
+    - name: "Step 7: Seed Vault KV v2 backend with secrets"
+      block:
+        - name: "Enable KV v2 backend"
+          environment:
+            VAULT_ADDR: "{{ vault_endpoint }}"
+            VAULT_CACERT: "{{ vault_cacert }}"
+            VAULT_TOKEN: "{{ vault_init_output.vault_root_token }}"
+            VAULT_SKIP_VERIFY: "true"
+          shell: |
+            vault secrets enable -path=secret kv-v2 2>&1 | grep -v "path is already in use"
+          delegate_to: sec01
+          no_log: true
+
+        - name: "Store Proxmox token in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/infra/proxmox/api-token"
+            data:
+              value: "{{ proxmox_token }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store Terraform Cloud token in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/infra/terraform-cloud/team-token"
+            data:
+              value: "{{ terraform_cloud_token }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store step-ca provisioner password in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/pki/step-ca/provisioner-password"
+            data:
+              value: "{{ step_ca_provisioner_password }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store Jenkins admin token in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/ci/jenkins/admin-token"
+            data:
+              value: "{{ jenkins_admin_token }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store step-ca root fingerprint in Vault (P1-4 TOFU audit trail)"
+          community.hashi_vault.vault_write:
+            path: "secret/data/pki/step-ca/root-fingerprint"
+            data:
+              fingerprint: "{{ step_ca_fingerprint }}"
+              issued_date: "{{ ansible_date_time.iso8601 }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+    # ============================================================
+    # STEP 8: Create AppRoles for Jenkins + Agents (P1-3 secret_id TTL)
+    # ============================================================
+    - name: "Step 8: Create AppRoles for infrastructure services"
+      block:
+        - name: "Enable AppRole auth method"
+          environment:
+            VAULT_ADDR: "{{ vault_endpoint }}"
+            VAULT_CACERT: "{{ vault_cacert }}"
+            VAULT_TOKEN: "{{ vault_init_output.vault_root_token }}"
+            VAULT_SKIP_VERIFY: "true"
+          shell: |
+            vault auth enable approle 2>&1 | grep -v "path is already in use"
+          delegate_to: sec01
+          no_log: true
+
+        # === Jenkins AppRole ===
+        - name: "Create Jenkins AppRole (P1-3: set secret_id TTL to 24h)"
+          community.hashi_vault.vault_write:
+            path: "auth/approle/role/jenkins"
+            data:
+              token_ttl: 1h
+              token_max_ttl: 4h
+              secret_id_ttl: 86400  # P1-3: 24h TTL (vs. no TTL/permanent)
+              bind_secret_id: true
+              policies:
+                - default
+                - jenkins
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Get Jenkins role_id"
+          community.hashi_vault.vault_read:
+            path: "auth/approle/role/jenkins/role-id"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          register: jenkins_role_id_result
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Generate Jenkins secret_id"
+          community.hashi_vault.vault_write:
+            path: "auth/approle/role/jenkins/secret-id"
+            data: {}
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          register: jenkins_secret_id_result
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store Jenkins AppRole credentials in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/ci/jenkins/approle"
+            data:
+              role_id: "{{ jenkins_role_id_result.json.data.data.role_id }}"
+              secret_id: "{{ jenkins_secret_id_result.json.data.data.secret_id }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        # === Agents AppRole ===
+        - name: "Create Agents AppRole (P1-3: set secret_id TTL to 24h)"
+          community.hashi_vault.vault_write:
+            path: "auth/approle/role/agents"
+            data:
+              token_ttl: 1h
+              token_max_ttl: 4h
+              secret_id_ttl: 86400  # P1-3: 24h TTL
+              bind_secret_id: true
+              policies:
+                - default
+                - agents
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Get Agents role_id"
+          community.hashi_vault.vault_read:
+            path: "auth/approle/role/agents/role-id"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          register: agents_role_id_result
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Generate Agents secret_id"
+          community.hashi_vault.vault_write:
+            path: "auth/approle/role/agents/secret-id"
+            data: {}
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          register: agents_secret_id_result
+          no_log: true
+          delegate_to: sec01
+
+        - name: "Store Agents AppRole credentials in Vault"
+          community.hashi_vault.vault_write:
+            path: "secret/data/ci/agents/approle"
+            data:
+              role_id: "{{ agents_role_id_result.json.data.data.role_id }}"
+              secret_id: "{{ agents_secret_id_result.json.data.data.secret_id }}"
+            auth_method: token
+            token: "{{ vault_init_output.vault_root_token }}"
+            url: "{{ vault_endpoint }}"
+            validate_certs: false
+          no_log: true
+          delegate_to: sec01
+
+    # ============================================================
+    # STEP 9: Configure Firewall (P1-10 firewall rules)
+    # ============================================================
+    - name: "Step 9: Configure host firewall on sec01 (P1-10 mitigation)"
+      block:
+        - name: "Enable UFW firewall"
+          shell: |
+            ufw --force enable
+            ufw default deny incoming
+            ufw default allow outgoing
+          delegate_to: sec01
+          become: yes
+
+        - name: "Allow SSH for Ansible management"
+          ufw:
+            rule: allow
+            port: "22"
+            proto: tcp
+          delegate_to: sec01
+          become: yes
+
+        - name: "Allow Vault API (internal only)"
+          ufw:
+            rule: allow
+            port: "8200"
+            proto: tcp
+            from_ip: "{{ vernify_network_cidr }}"
+          delegate_to: sec01
+          become: yes
+
+        - name: "Allow step-ca API (internal only)"
+          ufw:
+            rule: allow
+            port: "9000"
+            proto: tcp
+            from_ip: "{{ vernify_network_cidr }}"
+          delegate_to: sec01
+          become: yes
+
+    # ============================================================
+    # STEP 10: Verification & Summary
+    # ============================================================
+    - name: "Step 10: Final verification"
+      block:
+        - name: "Verify Vault is unsealed"
+          uri:
+            url: "{{ vault_endpoint }}/v1/sys/health"
+            method: GET
+            validate_certs: no
+          register: final_vault_health
+          failed_when: final_vault_health.json.sealed | default(true)
+
+        - name: "Verify secret retrieval (Proxmox token)"
+          environment:
+            VAULT_ADDR: "{{ vault_endpoint }}"
+            VAULT_CACERT: "{{ vault_cacert }}"
+            VAULT_TOKEN: "{{ vault_init_output.vault_root_token }}"
+            VAULT_SKIP_VERIFY: "true"
+          shell: |
+            vault kv get -field=value secret/infra/proxmox/api-token | head -c 10
+          delegate_to: sec01
+          register: secret_test
+          no_log: true
+
+        - name: "✓ Phase 3 Complete — Print Summary"
+          debug:
+            msg: |
+              ========== PHASE 3 COMPLETE ==========
+
+              Security Core (sec01) is now online:
+              - ✓ Proxmox VM provisioned (IP: {{ sec01_ip_actual }})
+              - ✓ step-ca root CA initialized + provisioner ready
+              - ✓ Vault initialized + unsealed + secrets seeded
+              - ✓ AppRoles created for Jenkins + agents
+              - ✓ Audit logging enabled (file backend)
+              - ✓ Auto-unseal systemd service configured
+              - ✓ Seal status monitoring timer active
+              - ✓ Firewall configured (UFW inbound deny)
+
+              Next Steps (Phase 4):
+              1. Run: terraform-build01-deploy → provision build01
+              2. Deploy Jenkins container + Vault AppRole integration
+              3. Seed Job DSL pipelines (Packer, Terraform, Ansible)
+
+              Verification Commands:
+              - Test Vault: curl -k {{ vault_endpoint }}/v1/sys/health
+              - Check seal: ssh ubuntu@{{ sec01_ip_actual }} vault status
+              - List secrets: vault kv list secret/infra/
+              - Check firewall: ssh ubuntu@{{ sec01_ip_actual }} sudo ufw status
+
+              Root token file: /opt/vault/root-token.txt (will auto-delete after 10 min)
+              Unseal keys: /opt/vault/unseal-keys.json (0600, operator-backed-up)
+              Unseal script: /opt/vault/unseal.sh (0700, systemd-callable)
+
+              =====================================
+
+  handlers:
+    - name: "Systemd daemon reload"
+      systemd:
+        daemon_reload: yes

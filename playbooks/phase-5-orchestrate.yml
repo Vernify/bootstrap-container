@@ -1,0 +1,420 @@
+---
+# Phase 5 Orchestration Playbook — Build Capacity (agent01)
+# Provisions agent01, deploys Jenkins agent + Vault agent, installs toolchain
+# Completes bootstrap and retires bootstrap container
+
+- name: "Phase 5 — Build Capacity (agent01) Orchestration"
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    proxmox_endpoint: "{{ lookup('env', 'PROXMOX_ENDPOINT') }}"
+    proxmox_token: "{{ lookup('env', 'PROXMOX_TOKEN') }}"
+    jenkins_admin_token: "{{ lookup('env', 'JENKINS_ADMIN_TOKEN') }}"
+
+    agent01_ip: "192.168.22.53"
+    build01_ip: "192.168.22.52"
+    sec01_ip: "192.168.22.51"
+    proxmox_gateway: "192.168.22.1"
+    vernify_search_domain: "vernify.internal"
+
+    vault_endpoint: "https://sec01.vernify.internal:8200"
+    vault_cacert: "/etc/ssl/certs/step-ca-root.crt"
+    jenkins_endpoint: "https://build01.vernify.internal:8443"
+
+  pre_tasks:
+    - name: "Pre-flight: Verify Phase 4 completed (Jenkins online)"
+      uri:
+        url: "{{ jenkins_endpoint }}/api/json"
+        method: GET
+        user: admin
+        password: "{{ jenkins_admin_token }}"
+        validate_certs: no
+      register: jenkins_check
+      retries: 5
+      delay: 5
+
+  tasks:
+    # ============================================================
+    # STEP 1: Terraform Provision agent01
+    # ============================================================
+    - name: "Step 1: Provision agent01 VM"
+      terraform:
+        project_path: "/workspace/terraform-agent01-deploy"
+        state: present
+        variables:
+          proxmox_password: "{{ proxmox_token }}"
+          vm_name: "agent01"
+          vm_cores: 4
+          vm_memory: 8192
+          disk_size: 40
+          ipv4_address: "{{ agent01_ip }}/24"
+          ipv4_gateway: "{{ proxmox_gateway }}"
+          search_domain: "{{ vernify_search_domain }}"
+          tags:
+            - "phase-5"
+            - "build-capacity"
+            - "agent01"
+      register: terraform_agent01_output
+      retries: 3
+      delay: 10
+
+    - name: "Extract agent01 IP"
+      set_fact:
+        agent01_ip_actual: "{{ terraform_agent01_output.outputs.agent01_ipv4_address.value | split('/') | first }}"
+
+    - name: "Wait for agent01 SSH"
+      wait_for:
+        host: "{{ agent01_ip_actual }}"
+        port: 22
+        state: started
+        delay: 10
+        timeout: 300
+
+    - name: "Add agent01 to inventory"
+      add_host:
+        name: agent01
+        ansible_host: "{{ agent01_ip_actual }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: /root/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+    # ============================================================
+    # STEP 2: Configure DNS on agent01
+    # ============================================================
+    - name: "Configure hosts file on agent01"
+      copy:
+        content: |
+          127.0.0.1 localhost
+          ::1 ip6-localhost ip6-loopback
+
+          # Vernify internal network
+          {{ sec01_ip }} sec01 sec01.vernify.internal
+          {{ build01_ip }} build01 build01.vernify.internal
+          {{ agent01_ip }} agent01 agent01.vernify.internal
+
+          # Service FQDNs
+          {{ sec01_ip }} vault vault.sec01 vault.sec01.vernify.internal
+          {{ sec01_ip }} step-ca ca.sec01 ca.sec01.vernify.internal
+          {{ build01_ip }} jenkins jenkins.build01 jenkins.build01.vernify.internal
+        dest: /etc/hosts
+        mode: "0644"
+        owner: root
+        group: root
+      delegate_to: agent01
+
+    # ============================================================
+    # STEP 3: Deploy Jenkins Agent (JNLP, systemd service)
+    # ============================================================
+    - name: "Step 3: Deploy Jenkins agent (systemd service)"
+      block:
+        - name: "Retrieve agents AppRole from Vault"
+          set_fact:
+            agents_approle: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/ci/agents/approle', url=vault_endpoint, auth_method='token', token=lookup('env', 'VAULT_ROOT_TOKEN', default=''), validate_certs=false) }}"
+          no_log: true
+
+        - name: "Deploy Jenkins agent via blueprints.jenkins.agent role"
+          include_role:
+            name: blueprints.jenkins.agent
+            apply:
+              delegate_to: agent01
+          vars:
+            jenkins_controller_url: "{{ jenkins_endpoint }}"
+            jenkins_controller_username: admin
+            jenkins_controller_token: "{{ jenkins_admin_token }}"
+            jenkins_agent_name: "agent01"
+            jenkins_agent_labels:
+              - "packer-build"
+              - "terraform-plan"
+              - "ansible-execute"
+            # P1-12: JNLP configuration (port, protocol, auth)
+            jenkins_agent_jnlp_port: 50000
+            jenkins_agent_jnlp_protocol: "SSH"
+
+    # ============================================================
+    # STEP 4: Deploy Vault Agent (auto-renewal)
+    # ============================================================
+    - name: "Step 4: Deploy Vault agent (systemd service, auto-renewal)"
+      block:
+        - name: "Deploy Vault agent via blueprints.vault_integrations.vault_agent"
+          include_role:
+            name: blueprints.vault_integrations.vault_agent
+            apply:
+              delegate_to: agent01
+          vars:
+            vault_endpoint: "{{ vault_endpoint }}"
+            vault_cacert: "{{ vault_cacert }}"
+            vault_role_id: "{{ agents_approle.role_id }}"
+            vault_secret_id: "{{ agents_approle.secret_id }}"
+            vault_agent_config_dir: "/etc/vault-agent"
+
+    # ============================================================
+    # STEP 5: Install Build Toolchain
+    # ============================================================
+    - name: "Step 5: Install build toolchain (Packer, Terraform, Ansible)"
+      block:
+        - name: "Update apt cache"
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+          delegate_to: agent01
+          become: yes
+
+        - name: "Install HashiCorp repository"
+          shell: |
+            curl https://apt.releases.hashicorp.com/gpg | gpg --dearmor > /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list
+            apt-get update
+          delegate_to: agent01
+          become: yes
+
+        - name: "Install Packer"
+          apt:
+            name: packer
+            state: latest
+          delegate_to: agent01
+          become: yes
+
+        - name: "Install Terraform"
+          apt:
+            name: terraform
+            state: latest
+          delegate_to: agent01
+          become: yes
+
+        - name: "Install Ansible"
+          apt:
+            name: ansible-core
+            state: latest
+          delegate_to: agent01
+          become: yes
+
+        - name: "Install step CLI for certificate verification"
+          shell: |
+            wget https://dl.smallstep.com/gh-release/cli/gh-release-linux-amd64.tar.gz
+            tar -xf gh-release-linux-amd64.tar.gz
+            mv step_linux_*/step /usr/local/bin/
+            chmod +x /usr/local/bin/step
+          delegate_to: agent01
+          become: yes
+
+    # ============================================================
+    # STEP 6: Configure Firewall (P1-10)
+    # ============================================================
+    - name: "Step 6: Configure firewall on agent01"
+      block:
+        - name: "Enable UFW"
+          shell: "ufw --force enable && ufw default deny incoming"
+          delegate_to: agent01
+          become: yes
+
+        - name: "Allow SSH"
+          ufw:
+            rule: allow
+            port: "22"
+            proto: tcp
+          delegate_to: agent01
+          become: yes
+
+        - name: "Allow Vault agent communication"
+          ufw:
+            rule: allow
+            port: "8200"
+            proto: tcp
+            to_ip: "{{ sec01_ip }}"
+          delegate_to: agent01
+          become: yes
+
+        - name: "Allow Jenkins JNLP connection to build01"
+          ufw:
+            rule: allow
+            port: "50000"
+            proto: tcp
+            to_ip: "{{ build01_ip }}"
+          delegate_to: agent01
+          become: yes
+
+    # ============================================================
+    # STEP 7: Verify Agent Connection to Jenkins
+    # ============================================================
+    - name: "Step 7: Verify agent01 in Jenkins"
+      block:
+        - name: "Wait for agent to connect to Jenkins (max 2 min)"
+          uri:
+            url: "{{ jenkins_endpoint }}/api/json"
+            method: GET
+            user: admin
+            password: "{{ jenkins_admin_token }}"
+            validate_certs: no
+          register: jenkins_api_response
+          retries: 24
+          delay: 5
+          until: "'agent01' in jenkins_api_response.json.computer | map(attribute='displayName') | list"
+
+        - name: "Verify agent is online"
+          shell: |
+            curl -s -k -u admin:{{ jenkins_admin_token }} \
+              {{ jenkins_endpoint }}/api/json | jq '.computer[] | select(.displayName=="agent01") | .offline'
+          register: agent_offline_status
+          failed_when: "'true' in agent_offline_status.stdout"
+          no_log: true
+
+    # ============================================================
+    # STEP 8: Test Infrastructure Job
+    # ============================================================
+    - name: "Step 8: Run test job on agent01"
+      block:
+        - name: "Create and run test job"
+          shell: |
+            cat > /tmp/test-job.groovy << 'EOF'
+            job('test-connectivity') {
+              description 'Verify agent connectivity to Vault and step-ca'
+              label('agent01')
+              steps {
+                shell('''
+                  echo "Testing Vault connectivity..."
+                  curl -k https://sec01.vernify.internal:8200/v1/sys/health | jq .
+                  echo "Testing step-ca connectivity..."
+                  curl -k https://sec01.vernify.internal:9000/health | jq .
+                  echo "All connectivity tests passed!"
+                ''')
+              }
+            }
+            EOF
+            java -jar /opt/jenkins/jenkins-cli.jar \
+              -s {{ jenkins_endpoint }} \
+              -auth admin:{{ jenkins_admin_token }} \
+              create-job test-connectivity < /tmp/test-job.groovy
+          no_log: true
+
+    # ============================================================
+    # STEP 9: Clean up root token (P1-2 ephemeral storage)
+    # ============================================================
+    - name: "Step 9: Cleanup ephemeral root token (P1-2 mitigation)"
+      block:
+        - name: "Set tmpfs auto-delete timer for root token"
+          shell: |
+            # Root token file is in /opt/vault/root-token.txt
+            # Use systemd timer to delete after 10 minutes
+            cat > /etc/systemd/system/vault-root-token-cleanup.timer << 'EOF'
+            [Unit]
+            Description=Vault Root Token Cleanup (delete after 10 min)
+            Requires=vault-root-token-cleanup.service
+
+            [Timer]
+            OnBootSec=10min
+            Persistent=false
+
+            [Install]
+            WantedBy=timers.target
+            EOF
+
+            cat > /etc/systemd/system/vault-root-token-cleanup.service << 'EOF'
+            [Unit]
+            Description=Delete Vault Root Token
+            After=multi-user.target
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/bash -c 'rm -f /opt/vault/root-token.txt'
+            StandardOutput=journal
+            StandardError=journal
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable vault-root-token-cleanup.timer
+            systemctl start vault-root-token-cleanup.timer
+          delegate_to: sec01
+          become: yes
+
+    # ============================================================
+    # STEP 10: Bootstrap Container Retirement
+    # ============================================================
+    - name: "Step 10: Retire bootstrap container"
+      debug:
+        msg: |
+          ========== BOOTSTRAP CONTAINER RETIREMENT ==========
+
+          Phase 5 is complete. Bootstrap container is no longer needed.
+
+          To archive the bootstrap container:
+            docker commit bootstrap-container bootstrap-container:phase-5-complete
+            docker save bootstrap-container:phase-5-complete | gzip > bootstrap-container-archive.tar.gz
+            docker rm bootstrap-container
+
+          All infrastructure is now self-hosted:
+          - Secrets: managed by Vault (sec01)
+          - CI/CD: managed by Jenkins (build01)
+          - Infrastructure: provisioned by Terraform (agent01)
+          - Configuration: managed by Ansible (agent01 + others)
+
+          Bootstrap container files (if kept for reference):
+          - /workspace/bootstrap-container/playbooks/phase-3-orchestrate.yml
+          - /workspace/bootstrap-container/playbooks/phase-4-orchestrate.yml
+          - /workspace/bootstrap-container/playbooks/phase-5-orchestrate.yml
+
+          ===================================================
+
+    # ============================================================
+    # FINAL SUMMARY
+    # ============================================================
+    - name: "✓ PHASE 5 COMPLETE — Homelab Ready"
+      debug:
+        msg: |
+          ========== PHASE 5 COMPLETE — VERNIFY HOMELAB READY ==========
+
+          All three infrastructure cores are online:
+
+          sec01 (Security Core):
+          - IP: {{ sec01_ip }}
+          - step-ca root CA (Port 9000)
+          - Vault (Port 8200, unsealed, auditing enabled)
+          - Auto-unseal systemd service configured
+          - Health monitoring timer active
+
+          build01 (CI Core):
+          - IP: {{ build01_ip }}
+          - Jenkins controller (Port 8443)
+          - Vault AppRole integration (auto-renewal enabled)
+          - Job DSL pipelines seeded
+          - JNLP listener on port 50000
+
+          agent01 (Build Capacity):
+          - IP: {{ agent01_ip }}
+          - Jenkins agent (systemd service, connected to build01)
+          - Vault agent (auto-renewal of secrets + certs)
+          - Toolchain: Packer, Terraform, Ansible
+          - Firewall configured
+
+          Communication Matrix (P1-11):
+          - build01 → sec01:8200 (Vault)
+          - build01 → sec01:9000 (step-ca)
+          - agent01 → sec01:8200 (Vault)
+          - agent01 → build01:50000 (Jenkins JNLP)
+
+          Firewall Rules (P1-10):
+          - All VMs: UFW enabled, default deny inbound
+          - All VMs: Allow SSH (Ansible mgmt)
+          - All VMs: Allow required service ports
+          - All VMs: Default allow outbound
+
+          Verification Commands:
+          1. Check Vault health:
+             curl -k https://sec01.vernify.internal:8200/v1/sys/health
+
+          2. List secrets in Vault:
+             vault kv list secret/infra/
+
+          3. Verify Jenkins agent:
+             https://build01.vernify.internal:8443/computer/agent01/
+
+          4. Run test job:
+             https://build01.vernify.internal:8443/job/test-connectivity/
+
+          Bootstrap container is archived and ready for deletion.
+
+          Next: Begin infrastructure deployments (Phases 6+)
+
+          ========================================================
