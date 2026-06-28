@@ -343,146 +343,19 @@ role: `ansible-playbook -i inventories/sandbox/hosts.yml playbooks/postgresql.ym
 
 ## Phase 3 — Security core (sec01: step-ca → Vault)
 
-> **What:** Provision `sec01`, install step-ca and Vault, unseal Vault, and hand off secrets
-> into Vault. **This is the critical secret hand-off** — after this, all downstream secrets come
-> from Vault, not the CLI.
+> Phase 3-5 (sec01 step-ca + Vault, docker01 Jenkins, agent01 agent) is now fully automated via
+> `scripts/bootstrap-phase-3-5.sh` — see `vernify/roadmap/PHASE_3_5_OPERATOR_RUNBOOK.md` for the
+> complete day-by-day operator procedure, or run `./scripts/bootstrap-phase-3-5.sh --help` for the
+> script's own usage.
 >
-> **Uses:** Terraform (to provision sec01), Ansible (`blueprints.vault`, `blueprints.common`),
-> the `vault` CLI, the `step` CLI.
+> This RUNBOOK covers Phase 0-2 (bootstrap container, Terraform Cloud workspaces, dev01). The
+> detailed Phase 3 steps used to live here but have been superseded by the automated script and
+> its operator runbook; duplicating that detail here would only let the two drift out of sync.
 >
-> **Produces:** A running Vault and step-ca; all Phase 0 secrets migrated into Vault; unseal material
-> stored securely outside the container.
-
-### Prerequisites for Phase 3
-
-- Phase 2 TFC workspaces are created
-- Terraform has provisioned `sec01` VM (from the Phase 1 template)
-- SSH access to `sec01` is working
-- step-ca provisioner password is in `.env`
-
-### Step 1: Provision sec01 via Terraform
-
-Inside the bootstrap container:
-
-```bash
-source .env
-docker compose run --rm bootstrap
-
-cd /workspace/vernify/terraform/workspaces/main
-
-# Provision sec01 (and configure networking)
-terraform apply
-```
-
-### Step 2: Install step-ca on sec01
-
-Use Ansible to run `blueprints.packer` (or manual steps) to install step-ca as the PKI trust anchor.
-
-```bash
-# Inside the container:
-cd /workspace/vernify
-
-# Create playbook to install step-ca
-cat > playbook-step-ca.yml << 'EOF'
----
-- hosts: sec01
-  roles:
-    - blueprints.packer.step_ca_install
-  vars:
-    step_ca_provisioner_password: "{{ lookup('env', 'STEP_CA_PROVISIONER_PASSWORD') }}"
-EOF
-
-# Run the playbook
-ansible-playbook playbook-step-ca.yml
-```
-
-### Step 3: Install Vault on sec01
-
-Once step-ca is running, deploy Vault with TLS issued by step-ca:
-
-```bash
-# Inside the container:
-cat > playbook-vault.yml << 'EOF'
----
-- hosts: sec01
-  roles:
-    - blueprints.common.service_user
-    - blueprints.common.tls_material
-    - blueprints.vault.container_server
-  vars:
-    vault_tls_cert_source: "step_ca"  # TLS from step-ca
-EOF
-
-ansible-playbook playbook-vault.yml
-```
-
-### Step 4: Unseal Vault (external operation)
-
-Init and unseal Vault — **this is manual, one-time**:
-
-```bash
-# Outside the container (on your workstation):
-export VAULT_ADDR="https://sec01.vernify.com:8200"
-
-vault operator init -key-shares=5 -key-threshold=3 \
-  > /path/to/secure/storage/vault-init.txt
-
-# Store unseal keys and root token in a secure location (HSM, Vault, 1Password, etc.)
-# Do NOT store them in the container or in git.
-```
-
-### Step 5: Seed Vault with bootstrap secrets
-
-Once Vault is unsealed, use the bootstrap container to seed all Phase 0 secrets:
-
-```bash
-# Inside the container:
-export VAULT_ADDR="https://sec01.vernify.com:8200"
-export VAULT_TOKEN="<root-token-from-init>"
-
-# Seed Proxmox credentials
-vault kv put secret/proxmox/bootstrap \
-  url="$PROXMOX_URL" \
-  user="$PROXMOX_USER" \
-  password="$PROXMOX_PASSWORD"
-
-# Seed TFC token
-vault kv put secret/terraform/tfc \
-  token="$TFC_TOKEN"
-
-# Seed GitHub PAT
-vault kv put secret/github/vernify \
-  pat="$GIT_PAT"
-
-# Seed step-ca provisioner password
-vault kv put secret/step-ca \
-  provisioner_password="$STEP_CA_PROVISIONER_PASSWORD"
-
-# Seed Jenkins admin token (placeholder for Phase 4)
-vault kv put secret/jenkins/admin \
-  token="<jenkins-admin-token-from-phase-4>"
-```
-
-### Step 6: Deploy vault-agent on consumer hosts
-
-Downstream hosts use `vault-agent` to pull secrets and refresh TLS certs:
-
-```bash
-# Inside the container:
-cat > playbook-vault-agent.yml << 'EOF'
----
-- hosts: all
-  roles:
-    - blueprints.vault.agent_systemd
-  vars:
-    vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
-EOF
-
-ansible-playbook playbook-vault-agent.yml
-```
-
-> **After Phase 3:** Downstream phases no longer use CLI secrets. All secret retrieval is via
-> `community.hashi_vault` lookups from Vault.
+> **Note:** the Phase 4 and Phase 5 sections below predate the same automation and describe a
+> different topology (`build01` rather than the implemented `docker01`/`agent01`); they are not
+> in scope for this update and should be treated with the same caution — prefer
+> `vernify/roadmap/PHASE_3_5_OPERATOR_RUNBOOK.md` for current Phase 4/5 procedure.
 
 ---
 
