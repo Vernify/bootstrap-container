@@ -3,45 +3,58 @@
 ##############################################################################
 # Unified Bootstrap Script: Vernify Phases 3, 4, 5
 #
-# Purpose: Orchestrate complete homelab bootstrap in single idempotent script
+# Purpose: Orchestrate complete homelab bootstrap in a single idempotent
+# script. Each phase is delegated to an Ansible orchestration playbook
+# (playbooks/phase-{3,4,5}-orchestrate.yml); this script's job is:
+#   - pre-flight validation
+#   - Terraform provisioning of the three Proxmox targets
+#   - dynamic Ansible inventory generation from Terraform outputs
+#   - invoking the phase playbooks with the right extra-vars
+#   - per-phase completion markers for idempotent re-runs
+#   - the top-level operator gate before Vault unseal-key generation
 #
 # Phases:
-#   Phase 3: sec01 (step-ca + Vault) standup + secret seeding
-#   Phase 4: docker01 (Jenkins) deployment + pipeline seeding
-#   Phase 5: agent01 (LXC container + Jenkins agent + Vault agent) deployment
+#   Phase 3: sec01  (step-ca + Vault) standup + secret seeding
+#   Phase 4: docker01 (Jenkins, deployed from terraform-build01-deploy)
+#   Phase 5: agent01 (LXC: Jenkins agent + Vault agent + toolchain)
 #
-# Features:
-#   - Idempotent: can be re-run after partial failures
-#   - Integrated operator gates (unseal key backup confirmation)
-#   - Environment-based secret injection (no hardcoded credentials)
-#   - Complete error handling + rollback instructions
+# Environment variables (see bootstrap-container/.env.example):
+#   PROXMOX_URL                      Proxmox API URL (e.g. https://pve08.vernify.com:8006)
+#   PROXMOX_USER                     Proxmox user (e.g. root@pam)
+#   PROXMOX_PASSWORD                 Proxmox password
+#   TFC_TOKEN                        Terraform Cloud team token
+#   GIT_PAT                          GitHub PAT (collection/IaC repo access)
+#   STEP_CA_PROVISIONER_PASSWORD     step-ca provisioner password
+#   BOOTSTRAP_SSH_PRIVATE_KEY_B64    Base64-encoded SSH private key (or mount BOOTSTRAP_SSH_KEY_FILE)
+#   VAULT_ADDR                       Vault API address (default: https://sec01.vernify.internal:8200)
+#
+# Optional:
+#   JENKINS_ADMIN_TOKEN               Jenkins admin API token (auto-generated if unset — see Phase 4)
+#   WORKSPACE                         Path containing sibling repos (default: /workspace)
+#   BOOTSTRAP_STATE_DIR               Where completion markers are written (default: $BOOTSTRAP_DIR/.state)
 #
 # Usage:
-#   ./scripts/bootstrap-phase-3-5.sh \
-#     --proxmox-endpoint https://proxmox.vernify.internal:8006 \
-#     --proxmox-password "$PROXMOX_PASSWORD" \
-#     --tfc-token "$TFC_TOKEN" \
-#     --step-ca-provisioner-password "$STEP_CA_PASSWORD" \
-#     --jenkins-admin-token "$JENKINS_ADMIN_TOKEN"
-#
-# Environment Variables (alternative to CLI args):
-#   PROXMOX_ENDPOINT
-#   PROXMOX_PASSWORD
-#   TFC_TOKEN
-#   STEP_CA_PROVISIONER_PASSWORD
-#   JENKINS_ADMIN_TOKEN
-#   VAULT_ADDR (optional, defaults to https://sec01.vernify.internal:8200)
+#   ./scripts/bootstrap-phase-3-5.sh [--only-phase 3|4|5] [--reset-phase 3|4|5]
 #
 ##############################################################################
 
-set -o pipefail
+set -euo pipefail
 IFS=$'\n\t'
 
 # Script metadata
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOTSTRAP_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="${WORKSPACE:-/workspace}"
-ANSIBLE_COLLECTIONS="${BOOTSTRAP_DIR}/collections"
+STATE_DIR="${BOOTSTRAP_STATE_DIR:-${BOOTSTRAP_DIR}/.state}"
+SSH_KEY_FILE="${BOOTSTRAP_SSH_KEY_FILE:-/root/.ssh/id_vernify_bootstrap}"
+
+# Static network plan (see BLUEPRINTS_PHASE_3_5_ARCHITECTURE.md §2)
+# NOTE: these are placeholder defaults overwritten by the actual Terraform
+# outputs once each phase's "provision" step runs (see tf_output calls below).
+SEC01_IP="192.168.22.51"
+DOCKER01_IP="192.168.22.52"
+AGENT01_IP="192.168.22.53"
+CI_USER="ubuntu"      # cloud-init user on sec01/docker01 VMs (terraform-proxmox-vm default)
 
 # Color codes for output
 RED='\033[0;31m'
@@ -64,41 +77,64 @@ log_warn() {
 }
 
 log_error() {
-  echo -e "${RED}[ERROR]${NC} $*"
+  echo -e "${RED}[ERROR]${NC} $*" >&2
 }
 
-# Error handler
 error_exit() {
   log_error "$@"
   exit 1
 }
 
-# Parse command-line arguments
+# ----------------------------------------------------------------------------
+# Idempotency markers
+#
+# Each phase step writes a marker file on success. Re-running the script
+# checks for the marker first and skips the step if present. This is in
+# addition to (not a replacement for) the idempotency checks already built
+# into the Ansible roles/playbooks (e.g. init_and_unseal checks Vault's own
+# on-disk storage). The markers let the *shell orchestration* (terraform
+# apply, ansible-playbook invocation) be skipped without re-running Ansible
+# at all, which matters because the playbooks include interactive operator
+# gates that should not re-prompt on a no-op re-run.
+# ----------------------------------------------------------------------------
+marker_path() {
+  echo "${STATE_DIR}/$1.done"
+}
+
+is_done() {
+  [[ -f "$(marker_path "$1")" ]]
+}
+
+mark_done() {
+  mkdir -p "${STATE_DIR}"
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$(marker_path "$1")"
+}
+
+run_step() {
+  local marker="$1"
+  shift
+  if is_done "${marker}"; then
+    log_warn "Skipping '${marker}' (already completed; marker: $(marker_path "${marker}"))"
+    return 0
+  fi
+  "$@"
+  mark_done "${marker}"
+}
+
+# ----------------------------------------------------------------------------
+# Argument parsing
+# ----------------------------------------------------------------------------
+ONLY_PHASE=""
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
-    case $1 in
-      --proxmox-endpoint)
-        PROXMOX_ENDPOINT="$2"
+    case "$1" in
+      --only-phase)
+        ONLY_PHASE="$2"
         shift 2
         ;;
-      --proxmox-password)
-        PROXMOX_PASSWORD="$2"
-        shift 2
-        ;;
-      --tfc-token)
-        TFC_TOKEN="$2"
-        shift 2
-        ;;
-      --step-ca-provisioner-password)
-        STEP_CA_PROVISIONER_PASSWORD="$2"
-        shift 2
-        ;;
-      --jenkins-admin-token)
-        JENKINS_ADMIN_TOKEN="$2"
-        shift 2
-        ;;
-      --vault-addr)
-        VAULT_ADDR="$2"
+      --reset-phase)
+        reset_phase_markers "$2"
         shift 2
         ;;
       --help)
@@ -114,7 +150,6 @@ parse_args() {
   done
 }
 
-# Show usage
 show_help() {
   cat << EOF
 Usage: bootstrap-phase-3-5.sh [OPTIONS]
@@ -122,434 +157,272 @@ Usage: bootstrap-phase-3-5.sh [OPTIONS]
 Unified bootstrap orchestration for Vernify Phases 3, 4, 5.
 
 OPTIONS:
-  --proxmox-endpoint ENDPOINT              Proxmox API endpoint
-  --proxmox-password PASSWORD              Proxmox API password
-  --tfc-token TOKEN                        Terraform Cloud token
-  --step-ca-provisioner-password PASSWORD  step-ca provisioner password
-  --jenkins-admin-token TOKEN              Jenkins admin API token
-  --vault-addr ADDRESS                     Vault API address (default: https://sec01.vernify.internal:8200)
-  --help                                   Show this help message
+  --only-phase N      Run only phase N (3, 4, or 5). Useful for retrying a single phase.
+  --reset-phase N      Delete completion markers for phase N, then exit (forces re-run on next invocation).
+  --help               Show this help message
 
-All options can also be provided as environment variables:
-  PROXMOX_ENDPOINT
-  PROXMOX_PASSWORD
-  TFC_TOKEN
-  STEP_CA_PROVISIONER_PASSWORD
-  JENKINS_ADMIN_TOKEN
-  VAULT_ADDR
+All secrets are read from the environment (see .env.example):
+  PROXMOX_URL, PROXMOX_USER, PROXMOX_PASSWORD, TFC_TOKEN, GIT_PAT,
+  STEP_CA_PROVISIONER_PASSWORD, BOOTSTRAP_SSH_PRIVATE_KEY_B64, VAULT_ADDR
 
 EOF
 }
 
+reset_phase_markers() {
+  local phase="$1"
+  rm -f "${STATE_DIR}"/phase"${phase}"_*.done
+  log_success "Cleared completion markers for phase ${phase}"
+}
+
+# ----------------------------------------------------------------------------
 # Pre-flight validation
+# ----------------------------------------------------------------------------
 validate_environment() {
   log_info "=== PRE-FLIGHT VALIDATION ==="
 
-  # Check required environment variables
   local missing=()
-  for var in PROXMOX_ENDPOINT PROXMOX_PASSWORD TFC_TOKEN STEP_CA_PROVISIONER_PASSWORD JENKINS_ADMIN_TOKEN; do
-    if [[ -z "${!var}" ]]; then
-      missing+=("$var")
+  for var in PROXMOX_URL PROXMOX_USER PROXMOX_PASSWORD TFC_TOKEN STEP_CA_PROVISIONER_PASSWORD; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("${var}")
     fi
   done
 
   if [[ ${#missing[@]} -gt 0 ]]; then
-    log_error "Missing required environment variables: ${missing[*]}"
-    error_exit "Set via CLI args or env vars (see --help)"
+    error_exit "Missing required environment variables: ${missing[*]} (see .env.example)"
   fi
 
-  # Set defaults
+  if [[ -z "${BOOTSTRAP_SSH_PRIVATE_KEY_B64:-}" && ! -f "${SSH_KEY_FILE}" ]]; then
+    error_exit "No SSH key available: set BOOTSTRAP_SSH_PRIVATE_KEY_B64 or mount a key at ${SSH_KEY_FILE}"
+  fi
+
   VAULT_ADDR="${VAULT_ADDR:-https://sec01.vernify.internal:8200}"
+  export VAULT_ADDR
 
-  log_success "All environment variables present"
+  log_success "All required environment variables present"
 
-  # Check dependencies
-  for cmd in terraform ansible-core ansible-playbook vault packer step; do
+  for cmd in terraform ansible-playbook vault step jq; do
     if ! command -v "$cmd" &> /dev/null; then
       error_exit "Required command not found: $cmd"
     fi
   done
-
   log_success "All dependencies available"
 
-  # Check Packer template exists
-  if [[ ! -f "${WORKSPACE}/packer-template-proxmox/template.pkr.hcl" ]]; then
-    error_exit "Packer template not found: ${WORKSPACE}/packer-template-proxmox/template.pkr.hcl"
-  fi
+  for repo in terraform-sec01-deploy terraform-build01-deploy terraform-agent01-deploy; do
+    if [[ ! -d "${WORKSPACE}/${repo}" ]]; then
+      error_exit "Terraform repo not found: ${WORKSPACE}/${repo}"
+    fi
+  done
+  log_success "Terraform repos present"
 
-  log_success "Packer template available"
-
-  # Validate Proxmox connectivity
   log_info "Testing Proxmox API connectivity..."
-  if ! curl -s -k -u "root@pam:${PROXMOX_PASSWORD}" \
-    "${PROXMOX_ENDPOINT}/api2/json/nodes" > /dev/null 2>&1; then
-    error_exit "Cannot reach Proxmox API at ${PROXMOX_ENDPOINT}"
+  if ! curl -s -k -u "${PROXMOX_USER}:${PROXMOX_PASSWORD}" \
+    "${PROXMOX_URL}/api2/json/nodes" > /dev/null 2>&1; then
+    error_exit "Cannot reach Proxmox API at ${PROXMOX_URL}"
   fi
-
   log_success "Proxmox API reachable"
+
+  mkdir -p "${STATE_DIR}"
+}
+
+# ----------------------------------------------------------------------------
+# Shared helpers
+# ----------------------------------------------------------------------------
+wait_for_ssh() {
+  local host="$1"
+  local label="$2"
+  log_info "Waiting for ${label} (${host}) SSH accessibility (max 300s)..."
+  local retries=30
+  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY_FILE}" "${CI_USER}@${host}" /bin/true 2>/dev/null; do
+    retries=$((retries - 1))
+    if [[ ${retries} -le 0 ]]; then
+      error_exit "${label} SSH unreachable after 300 seconds"
+    fi
+    sleep 10
+  done
+  log_success "${label} SSH accessible"
+}
+
+# Reads a Terraform output value (raw string) from a given repo directory.
+tf_output() {
+  local repo_dir="$1"
+  local output_name="$2"
+  terraform -chdir="${repo_dir}" output -raw "${output_name}"
 }
 
 ##############################################################################
 # PHASE 3: Security Core (sec01)
 ##############################################################################
 
-phase_3_provision_sec01() {
-  log_info "=== PHASE 3: Provision sec01 (step-ca + Vault) ==="
+phase3_provision_sec01() {
+  log_info "=== PHASE 3a: Provision sec01 (Terraform) ==="
+  local repo="${WORKSPACE}/terraform-sec01-deploy"
 
-  # Check if sec01 already exists (idempotency)
-  if terraform -chdir="${WORKSPACE}/terraform-sec01-deploy" state show module.sec01_vm.proxmox_vm_qemu.sec01 > /dev/null 2>&1; then
-    log_warn "sec01 already exists in Terraform state; skipping provisioning"
-    return 0
-  fi
-
-  log_info "Running terraform apply for sec01..."
-  terraform -chdir="${WORKSPACE}/terraform-sec01-deploy" apply -auto-approve \
-    -var="proxmox_ve_endpoint=${PROXMOX_ENDPOINT}" \
-    -var="proxmox_ve_password=${PROXMOX_PASSWORD}" \
-    -var="template_name=ubuntu-base-container-host" \
-    -var="vm_cpu=8" \
-    -var="vm_memory=16384" \
-    -var="ip_address=192.168.22.51/24" \
+  terraform -chdir="${repo}" init -input=false
+  terraform -chdir="${repo}" apply -auto-approve \
+    -var="proxmox_api_url=${PROXMOX_URL}/api2/json" \
+    -var="proxmox_user=${PROXMOX_USER}" \
+    -var="proxmox_password=${PROXMOX_PASSWORD}" \
+    -var="ssh_public_keys=[\"$(cat "${SSH_KEY_FILE}.pub")\"]" \
     || error_exit "Terraform apply failed for sec01"
 
-  log_success "sec01 provisioned"
+  SEC01_IP="$(tf_output "${repo}" sec01_ipv4_address | cut -d/ -f1)"
+  log_success "sec01 provisioned (IP: ${SEC01_IP})"
 
-  # Wait for sec01 to be reachable
-  log_info "Waiting for sec01 SSH accessibility (max 300s)..."
-  local retries=30
-  local delay=10
-  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i /root/.ssh/id_rsa root@192.168.22.51 /bin/true 2>/dev/null; do
-    retries=$((retries - 1))
-    if [[ $retries -le 0 ]]; then
-      error_exit "sec01 SSH unreachable after 300 seconds"
-    fi
-    log_info "Waiting... (${retries} retries left)"
-    sleep "$delay"
-  done
-
-  log_success "sec01 SSH accessible"
+  wait_for_ssh "${SEC01_IP}" "sec01"
 }
 
-phase_3_deploy_step_ca() {
-  log_info "=== PHASE 3: Deploy step-ca on sec01 ==="
+phase3_run_orchestration() {
+  log_info "=== PHASE 3b: Run phase-3-orchestrate.yml (step-ca, Vault, secret seeding) ==="
+  log_warn "This step includes an interactive, blocking operator gate (Vault unseal-key backup)."
 
-  # Check idempotency: if step-ca already initialized, skip
-  if ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa root@192.168.22.51 \
-    "test -f /opt/step-ca/certs/root_ca.crt" 2>/dev/null; then
-    log_warn "step-ca already initialized; skipping deployment"
-    return 0
-  fi
-
-  log_info "Running Ansible step-ca convergence..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/converge-step-ca.yml" \
-    -i "192.168.22.51," \
-    -e "step_ca_provisioner_password=${STEP_CA_PROVISIONER_PASSWORD}" \
-    || error_exit "step-ca convergence failed"
-
-  log_success "step-ca deployed"
-}
-
-phase_3_deploy_vault() {
-  log_info "=== PHASE 3: Deploy Vault on sec01 ==="
-
-  # Check idempotency
-  if ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa root@192.168.22.51 \
-    "test -f /opt/vault/data/core/keyring" 2>/dev/null; then
-    log_warn "Vault already initialized; skipping deployment"
-    return 0
-  fi
-
-  # Issue TLS cert for Vault from step-ca
-  log_info "Issuing TLS certificate for Vault from step-ca..."
-  # [Implementation: call step-ca cert issuance via Ansible role]
-  # For now, this is delegated to Ansible playbook
-
-  log_info "Running Ansible Vault deployment..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/converge-vault.yml" \
-    -i "192.168.22.51," \
-    || error_exit "Vault deployment failed"
-
-  log_success "Vault deployed (sealed, not yet initialized)"
-}
-
-phase_3_init_vault() {
-  log_info "=== PHASE 3: Initialize Vault on sec01 ==="
-
-  # Check if already initialized
-  if ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa root@192.168.22.51 \
-    "vault status >/dev/null 2>&1 && echo initialized" 2>/dev/null | grep -q initialized; then
-    log_warn "Vault already initialized; skipping init"
-    return 0
-  fi
-
-  log_info "Running Vault init (this will prompt for unseal key backup)..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/init-vault.yml" \
-    -i "192.168.22.51," \
-    -e "vault_addr=${VAULT_ADDR}" \
-    || error_exit "Vault init failed"
-
-  log_success "Vault initialized"
-
-  # OPERATOR GATE 1: Backup unseal keys
-  log_warn "========== OPERATOR GATE 1: BACKUP UNSEAL KEYS =========="
-  echo "Unseal keys have been generated and are stored on sec01."
-  echo "You MUST back them up to secure storage (1Password, encrypted USB, etc.)"
-  echo ""
-  read -p "Have you backed up the unseal keys to secure storage? (yes/no): " backup_confirm
-
-  if [[ "${backup_confirm}" != "yes" ]]; then
-    error_exit "Unseal keys must be backed up before proceeding"
-  fi
-
-  log_success "Operator confirmed unseal key backup"
-}
-
-phase_3_unseal_vault() {
-  log_info "=== PHASE 3: Unseal Vault ==="
-
-  # Check if already unsealed
-  if ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa root@192.168.22.51 \
-    "VAULT_ADDR=${VAULT_ADDR} vault status | grep -q 'Sealed.*false'" 2>/dev/null; then
-    log_warn "Vault already unsealed; skipping unseal"
-    return 0
-  fi
-
-  log_info "Unsealing Vault..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/unseal-vault.yml" \
-    -i "192.168.22.51," \
-    -e "vault_addr=${VAULT_ADDR}" \
-    || error_exit "Vault unseal failed"
-
-  log_success "Vault unsealed"
-}
-
-phase_3_seed_vault() {
-  log_info "=== PHASE 3: Seed Vault with secrets ==="
-
-  log_info "Writing secrets to Vault KV backend..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/seed-vault.yml" \
-    -i "192.168.22.51," \
-    -e "vault_addr=${VAULT_ADDR}" \
+  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-3-orchestrate.yml" \
+    -e "sec01_ip=${SEC01_IP}" \
+    -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
+    -e "ansible_user=${CI_USER}" \
     -e "proxmox_token=${PROXMOX_PASSWORD}" \
-    -e "tfc_token=${TFC_TOKEN}" \
+    -e "terraform_cloud_token=${TFC_TOKEN}" \
     -e "step_ca_provisioner_password=${STEP_CA_PROVISIONER_PASSWORD}" \
-    -e "jenkins_admin_token=${JENKINS_ADMIN_TOKEN}" \
-    || error_exit "Vault secret seeding failed"
+    || error_exit "Phase 3 orchestration playbook failed"
 
-  log_success "Vault secrets seeded"
+  log_success "Phase 3 orchestration complete (sec01: step-ca + Vault unsealed + secrets seeded)"
 }
 
 ##############################################################################
-# PHASE 4: CI Core (docker01)
+# PHASE 4: CI Core (docker01, provisioned from terraform-build01-deploy)
 ##############################################################################
 
-phase_4_provision_docker01() {
-  log_info "=== PHASE 4: Provision docker01 (Jenkins container host) ==="
+phase4_provision_docker01() {
+  log_info "=== PHASE 4a: Provision docker01 (Terraform) ==="
+  local repo="${WORKSPACE}/terraform-build01-deploy"
 
-  # Check idempotency
-  if terraform -chdir="${WORKSPACE}/terraform-docker01-deploy" state show module.docker01_vm.proxmox_vm_qemu.docker01 > /dev/null 2>&1; then
-    log_warn "docker01 already exists; skipping provisioning"
-    return 0
-  fi
-
-  log_info "Running terraform apply for docker01..."
-  terraform -chdir="${WORKSPACE}/terraform-docker01-deploy" apply -auto-approve \
-    -var="proxmox_ve_endpoint=${PROXMOX_ENDPOINT}" \
-    -var="proxmox_ve_password=${PROXMOX_PASSWORD}" \
-    -var="template_name=ubuntu-base-container-host" \
-    -var="vm_cpu=4" \
-    -var="vm_memory=8192" \
-    -var="ip_address=192.168.22.52/24" \
+  terraform -chdir="${repo}" init -input=false
+  terraform -chdir="${repo}" apply -auto-approve \
+    -var="proxmox_api_url=${PROXMOX_URL}/api2/json" \
+    -var="proxmox_user=${PROXMOX_USER}" \
+    -var="proxmox_password=${PROXMOX_PASSWORD}" \
+    -var="ssh_public_keys=[\"$(cat "${SSH_KEY_FILE}.pub")\"]" \
     || error_exit "Terraform apply failed for docker01"
 
-  log_success "docker01 provisioned"
+  DOCKER01_IP="$(tf_output "${repo}" docker01_ipv4_address | cut -d/ -f1)"
+  log_success "docker01 provisioned (IP: ${DOCKER01_IP})"
 
-  # Wait for docker01 to be reachable
-  log_info "Waiting for docker01 SSH accessibility..."
-  local retries=30
-  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i /root/.ssh/id_rsa root@192.168.22.52 /bin/true 2>/dev/null; do
-    retries=$((retries - 1))
-    if [[ $retries -le 0 ]]; then
-      error_exit "docker01 SSH unreachable after 300 seconds"
-    fi
-    sleep 10
-  done
-
-  log_success "docker01 SSH accessible"
+  wait_for_ssh "${DOCKER01_IP}" "docker01"
 }
 
-phase_4_deploy_jenkins() {
-  log_info "=== PHASE 4: Deploy Jenkins on docker01 ==="
+phase4_run_orchestration() {
+  log_info "=== PHASE 4b: Run phase-4-orchestrate.yml (Jenkins + Vault AppRole wiring) ==="
 
-  # Check idempotency
-  if ssh -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa root@192.168.22.52 \
-    "test -f /opt/jenkins/.initialized" 2>/dev/null; then
-    log_warn "Jenkins already deployed; skipping deployment"
-    return 0
-  fi
+  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-4-orchestrate.yml" \
+    -e "sec01_ip=${SEC01_IP}" \
+    -e "docker01_ip=${DOCKER01_IP}" \
+    -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
+    -e "ansible_user=${CI_USER}" \
+    || error_exit "Phase 4 orchestration playbook failed"
 
-  log_info "Issuing TLS certificate for Jenkins..."
-  # [Delegated to Ansible playbook]
-
-  log_info "Running Ansible Jenkins deployment..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/converge-jenkins.yml" \
-    -i "192.168.22.52," \
-    -e "vault_addr=${VAULT_ADDR}" \
-    -e "jenkins_admin_token=${JENKINS_ADMIN_TOKEN}" \
-    || error_exit "Jenkins deployment failed"
-
-  log_success "Jenkins deployed"
-}
-
-phase_4_seed_pipelines() {
-  log_info "=== PHASE 4: Seed Job DSL pipelines ==="
-
-  log_info "Seeding Jenkins pipelines..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/seed-job-dsl.yml" \
-    -i "192.168.22.52," \
-    -e "jenkins_admin_token=${JENKINS_ADMIN_TOKEN}" \
-    || error_exit "Job DSL seeding failed"
-
-  log_success "Job DSL pipelines seeded"
+  log_success "Phase 4 orchestration complete (docker01: Jenkins online, AppRole wired)"
 }
 
 ##############################################################################
 # PHASE 5: Build Capacity (agent01 LXC)
 ##############################################################################
 
-phase_5_provision_agent01() {
-  log_info "=== PHASE 5: Provision agent01 (LXC container) ==="
+phase5_provision_agent01() {
+  log_info "=== PHASE 5a: Provision agent01 (Terraform, LXC) ==="
+  local repo="${WORKSPACE}/terraform-agent01-deploy"
 
-  # Check idempotency
-  if terraform -chdir="${WORKSPACE}/terraform-agent01-deploy" state show module.agent01_lxc.proxmox_lxc.agent01 > /dev/null 2>&1; then
-    log_warn "agent01 already exists; skipping provisioning"
-    return 0
-  fi
-
-  log_info "Running terraform apply for agent01 LXC..."
-  terraform -chdir="${WORKSPACE}/terraform-agent01-deploy" apply -auto-approve \
-    -var="proxmox_ve_endpoint=${PROXMOX_ENDPOINT}" \
-    -var="proxmox_ve_password=${PROXMOX_PASSWORD}" \
-    -var="container_type=lxc" \
-    -var="container_cpu=2" \
-    -var="container_memory=4096" \
-    -var="container_disk_size=20" \
-    -var="ip_address=192.168.22.53/24" \
+  terraform -chdir="${repo}" init -input=false
+  terraform -chdir="${repo}" apply -auto-approve \
+    -var="proxmox_api_url=${PROXMOX_URL}/api2/json" \
+    -var="proxmox_user=${PROXMOX_USER}" \
+    -var="proxmox_password=${PROXMOX_PASSWORD}" \
+    -var="ssh_public_keys=[\"$(cat "${SSH_KEY_FILE}.pub")\"]" \
     || error_exit "Terraform apply failed for agent01"
 
-  log_success "agent01 LXC provisioned"
+  AGENT01_IP="$(tf_output "${repo}" agent01_ipv4_address)"
+  log_success "agent01 LXC provisioned (IP: ${AGENT01_IP})"
 
-  # Wait for agent01 to be reachable
-  log_info "Waiting for agent01 SSH accessibility..."
-  local retries=30
-  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i /root/.ssh/id_rsa root@192.168.22.53 /bin/true 2>/dev/null; do
-    retries=$((retries - 1))
-    if [[ $retries -le 0 ]]; then
-      error_exit "agent01 SSH unreachable after 300 seconds"
-    fi
-    sleep 10
-  done
-
-  log_success "agent01 SSH accessible"
+  wait_for_ssh "${AGENT01_IP}" "agent01"
 }
 
-phase_5_deploy_agent() {
-  log_info "=== PHASE 5: Deploy Jenkins agent on agent01 ==="
+phase5_run_orchestration() {
+  log_info "=== PHASE 5b: Run phase-5-orchestrate.yml (Jenkins agent, Vault agent, toolchain) ==="
 
-  log_info "Running Ansible agent deployment..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/converge-jenkins-agent.yml" \
-    -i "192.168.22.53," \
-    -e "jenkins_controller_url=https://docker01.vernify.internal:8443" \
-    -e "jenkins_admin_token=${JENKINS_ADMIN_TOKEN}" \
-    || error_exit "Jenkins agent deployment failed"
+  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-5-orchestrate.yml" \
+    -e "sec01_ip=${SEC01_IP}" \
+    -e "docker01_ip=${DOCKER01_IP}" \
+    -e "agent01_ip=${AGENT01_IP}" \
+    -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
+    -e "ansible_user=${CI_USER}" \
+    || error_exit "Phase 5 orchestration playbook failed"
 
-  log_success "Jenkins agent deployed"
-}
-
-phase_5_deploy_vault_agent() {
-  log_info "=== PHASE 5: Deploy Vault agent on agent01 ==="
-
-  log_info "Running Ansible Vault agent deployment..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/converge-vault-agent.yml" \
-    -i "192.168.22.53," \
-    -e "vault_addr=${VAULT_ADDR}" \
-    || error_exit "Vault agent deployment failed"
-
-  log_success "Vault agent deployed"
-}
-
-phase_5_install_toolchain() {
-  log_info "=== PHASE 5: Install toolchain on agent01 ==="
-
-  log_info "Installing Packer, Terraform, Ansible..."
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/install-toolchain.yml" \
-    -i "192.168.22.53," \
-    || error_exit "Toolchain installation failed"
-
-  log_success "Toolchain installed"
+  log_success "Phase 5 orchestration complete (agent01: Jenkins agent + Vault agent + toolchain ready)"
 }
 
 ##############################################################################
 # MAIN EXECUTION
 ##############################################################################
 
+run_phase3() {
+  log_info ""
+  log_info "========== PHASE 3: Security Core (sec01) =========="
+  run_step phase3_provision_sec01 phase3_provision_sec01
+  run_step phase3_run_orchestration phase3_run_orchestration
+  log_success "PHASE 3 COMPLETE"
+}
+
+run_phase4() {
+  log_info ""
+  log_info "========== PHASE 4: CI Core (docker01) =========="
+  run_step phase4_provision_docker01 phase4_provision_docker01
+  run_step phase4_run_orchestration phase4_run_orchestration
+  log_success "PHASE 4 COMPLETE"
+}
+
+run_phase5() {
+  log_info ""
+  log_info "========== PHASE 5: Build Capacity (agent01) =========="
+  run_step phase5_provision_agent01 phase5_provision_agent01
+  run_step phase5_run_orchestration phase5_run_orchestration
+  log_success "PHASE 5 COMPLETE"
+}
+
 main() {
   log_info "========== Vernify Bootstrap Script: Phases 3-5 =========="
-  log_info "Start time: $(date -Iseconds)"
+  log_info "Start time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-  # Parse CLI arguments (override env vars)
   parse_args "$@"
-
-  # Pre-flight checks
   validate_environment
 
-  # Phase 3: sec01 standup
-  log_info ""
-  log_info "========== PHASE 3: Security Core =========="
-  phase_3_provision_sec01
-  phase_3_deploy_step_ca
-  phase_3_deploy_vault
-  phase_3_init_vault
-  phase_3_unseal_vault
-  phase_3_seed_vault
+  case "${ONLY_PHASE}" in
+    3) run_phase3 ;;
+    4) run_phase4 ;;
+    5) run_phase5 ;;
+    "")
+      run_phase3
+      run_phase4
+      run_phase5
+      ;;
+    *)
+      error_exit "Invalid --only-phase value: ${ONLY_PHASE} (must be 3, 4, or 5)"
+      ;;
+  esac
 
-  log_success "PHASE 3 COMPLETE"
-
-  # Phase 4: docker01 standup
-  log_info ""
-  log_info "========== PHASE 4: CI Core =========="
-  phase_4_provision_docker01
-  phase_4_deploy_jenkins
-  phase_4_seed_pipelines
-
-  log_success "PHASE 4 COMPLETE"
-
-  # Phase 5: agent01 LXC standup
-  log_info ""
-  log_info "========== PHASE 5: Build Capacity =========="
-  phase_5_provision_agent01
-  phase_5_deploy_agent
-  phase_5_deploy_vault_agent
-  phase_5_install_toolchain
-
-  log_success "PHASE 5 COMPLETE"
-
-  # Summary
   log_info ""
   log_info "========== BOOTSTRAP COMPLETE =========="
-  log_success "All phases completed successfully!"
+  log_success "All requested phases completed successfully!"
   echo ""
-  echo "Vernify infrastructure is now fully bootstrapped:"
-  echo "  - sec01 (security core): step-ca + Vault"
-  echo "  - docker01 (CI core): Jenkins container host"
-  echo "  - agent01 (build capacity): LXC container with agent + toolchain"
+  echo "Vernify infrastructure status:"
+  echo "  - sec01   (${SEC01_IP}):   step-ca + Vault (security core)"
+  echo "  - docker01 (${DOCKER01_IP}): Jenkins container host (CI core)"
+  echo "  - agent01 (${AGENT01_IP}): LXC build agent + Vault agent + toolchain"
   echo ""
   echo "Next steps:"
-  echo "  1. Verify Vault health: vault status"
+  echo "  1. Verify Vault health: curl -k \${VAULT_ADDR}/v1/sys/health"
   echo "  2. Access Jenkins: https://docker01.vernify.internal:8443"
-  echo "  3. Archive bootstrap container (no longer needed)"
+  echo "  3. Confirm unseal keys are backed up externally (operator responsibility, not in Vault/git)"
+  echo "  4. Archive and retire this bootstrap container (see RUNBOOK.md)"
   echo ""
-  echo "End time: $(date -Iseconds)"
+  echo "End time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 
 main "$@"
