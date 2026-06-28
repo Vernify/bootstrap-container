@@ -2,13 +2,34 @@
 # ---------------------------------------------------------------------------
 # Vernify Bootstrap Container — Ansible Galaxy requirements
 #
-# All blueprints.* collections are pinned to a specific Git ref.
-# During Phase 0 the container is built from these refs; update the ref
-# to consume a newer collection version and rebuild the image.
+# Blueprints collections: Git source with main branch
+#   All blueprints.* collections are pinned to a specific Git ref.
+#   During Phase 0 the container is built from these refs; update the ref
+#   to consume a newer collection version and rebuild the image.
+#
+# Community collections: Galaxy source with semantic versioning
+#   External collections are pinned to semantic versions for stability.
+#   Update versions incrementally after validating backward compatibility.
+#   As of June 2026:
+#     - community.docker: >=1.10.0,<2.0.0 (container lifecycle management)
+#     - community.general: >=3.0.0,<4.0.0 (general utilities)
+#     - community.hashi_vault: >=1.0.0,<2.0.0 (Vault API integration)
+#
+# To update a community collection version:
+#   1. Edit the version constraint (e.g., ">=X.Y.Z,<(X+1).0.0")
+#   2. Run: ansible-galaxy collection install -r requirements.yml
+#   3. Validate playbook syntax: ansible-playbook --syntax-check playbooks/*.yml
+#   4. Test in dev environment before deploying to production
 # ---------------------------------------------------------------------------
 collections:
+  # --- Blueprints Collections (Source: Git) ---
   - name: blueprints.common
     source: https://github.com/iac-foundry/ansible-collection-common
+    type: git
+    version: main
+
+  - name: blueprints.step_ca
+    source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
     version: main
 
@@ -37,10 +58,15 @@ collections:
     type: git
     version: main
 
-  # HashiCorp Vault lookup / connection plugin (secret retrieval post Phase 3)
-  - name: community.hashi_vault
-    version: ">=6.0.0"
+  # --- Community Collections (Source: Ansible Galaxy) ---
+  # Docker container lifecycle management (required for container_server roles)
+  - name: community.docker
+    version: ">=1.10.0,<2.0.0"
 
-  # General utilities
+  # General utilities and file/template operations
   - name: community.general
-    version: ">=9.0.0"
+    version: ">=3.0.0,<4.0.0"
+
+  # Vault API client and lookup plugins (required for vault_auth/vault_integrations roles)
+  - name: community.hashi_vault
+    version: ">=1.0.0,<2.0.0"
