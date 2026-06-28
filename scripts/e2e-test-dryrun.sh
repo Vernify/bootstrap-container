@@ -90,7 +90,7 @@ REQUIRED_VARS=(
 
 all_env_ok=true
 for var in "${REQUIRED_VARS[@]}"; do
-  if [[ -v "$var" ]]; then
+  if [[ -n "${!var:-}" ]]; then
     log_debug "$var is set"
   else
     log_warn "Environment variable $var is not set (required for deployment)"
