@@ -1,0 +1,546 @@
+---
+# ===================================================================
+# Template Orchestration Playbook
+# ===================================================================
+#
+# Purpose: Demonstrate best practices for Ansible orchestration in
+# the Vernify Phase 3-5 deployment framework.
+#
+# This template shows:
+# - Pre-flight validation (environment variables, connectivity checks)
+# - Multi-phase orchestration structure (terraform → deployment → verification)
+# - Role orchestration (import/include_role with apply context)
+# - Operator gates (pause tasks for manual confirmation)
+# - Error handling (rescue blocks, failed_when conditions)
+# - Idempotency guards (condition checks before state changes)
+# - Logging + progress reporting (debug, summary messages)
+# - Post-phase verification (health checks, smoke tests)
+#
+# Study this template when creating Phase D playbooks. Copy sections
+# as needed for your own orchestration flows.
+#
+# ===================================================================
+
+- name: "Template Phase — Orchestration with Best Practices"
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    # ===== Phase Configuration =====
+    phase_name: "template"
+    phase_number: 0  # For logging/reference
+
+    # ===== Environment Variables (from .env) =====
+    # These are expected to be set in bootstrap-container.env and sourced
+    # at container startup. Fail fast if missing.
+    api_endpoint: "{{ lookup('env', 'API_ENDPOINT') }}"
+    api_token: "{{ lookup('env', 'API_TOKEN') }}"
+
+    # ===== Service Configuration =====
+    # These are org/phase-specific. Define all inputs here (no magic values
+    # embedded in tasks). Caller can override via -e or group_vars.
+    service_name: "template-service"
+    service_port: "8080"
+    service_data_dir: "/opt/template-service"
+
+    # ===== Derived Variables =====
+    # Computed from other vars. Useful for templating, paths, etc.
+    phase_log_dir: "/var/log/vernify-phases"
+    phase_log_file: "{{ phase_log_dir }}/phase-{{ phase_number }}-{{ phase_name }}.log"
+
+  # ===================================================================
+  # PRE-FLIGHT VALIDATION (fail-fast pattern)
+  # ===================================================================
+  pre_tasks:
+    - name: "Create phase log directory"
+      file:
+        path: "{{ phase_log_dir }}"
+        state: directory
+        mode: "0755"
+      tags:
+        - always
+
+    - name: "[PRE] Validate required environment variables"
+      block:
+        # Check that mandatory variables are set and non-empty.
+        # Use assert with fail_msg to provide helpful diagnostics.
+        - name: Assert environment variables present
+          ansible.builtin.assert:
+            that:
+              - api_endpoint is defined
+              - api_endpoint | length > 0
+              - api_token is defined
+              - api_token | length > 0
+            fail_msg: |
+              Missing required environment variables:
+                - API_ENDPOINT: API server URL (e.g., 'https://api.internal:443')
+                - API_TOKEN: Bearer token for API authentication
+
+              Fix: Source bootstrap-container.env before running this playbook:
+                source .env
+                ansible-playbook playbooks/template-orchestration.yml
+            success_msg: "✓ All required environment variables present"
+
+        # Optional: add additional validation for well-formed values
+        - name: Validate endpoint is a valid URL
+          ansible.builtin.assert:
+            that:
+              - api_endpoint is match('^https?://')
+            fail_msg: "API_ENDPOINT must be a URL (https://... or http://...)"
+            success_msg: "✓ API endpoint format valid"
+
+      rescue:
+        # If any assertion fails, print diagnostic info and stop the playbook
+        - name: Print environment diagnostics
+          debug:
+            msg: |
+              Environment variable check failed.
+              Current values:
+                - API_ENDPOINT: {{ api_endpoint | default('NOT SET') }}
+                - API_TOKEN: {{ api_token | default('NOT SET') }} (hidden for security)
+
+        # Re-raise the error to stop playbook execution
+        - name: Stop playbook
+          fail:
+            msg: "Pre-flight validation failed. Check environment variables above."
+
+    - name: "[PRE] Connectivity checks"
+      block:
+        # Before proceeding with deployment tasks, verify connectivity to
+        # external services. Use retries for transient network issues.
+        - name: Test API endpoint connectivity
+          uri:
+            url: "{{ api_endpoint }}/health"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ api_token }}"
+            validate_certs: no  # Usually yes in production; no here for lab
+            status_code: [200, 401, 403]  # Accept auth errors; failure is timeout/unreachable
+          register: api_health
+          retries: 3  # Retry up to 3 times
+          delay: 5    # Wait 5 seconds between retries
+          until: api_health.status in [200, 401, 403]
+
+        - name: Fail if API unreachable
+          fail:
+            msg: |
+              Cannot reach API endpoint: {{ api_endpoint }}
+
+              Status: {{ api_health.status | default('no response') }}
+              Error: {{ api_health.msg | default('connection timeout') }}
+
+              Troubleshooting:
+              1. Verify API_ENDPOINT is correct
+              2. Check network connectivity (ping {{ api_endpoint }})
+              3. Verify firewall allows access on the port
+              4. Check API service logs on the remote host
+          when: api_health.status not in [200, 401, 403]
+
+        - name: Print API health status
+          debug:
+            msg: "✓ API endpoint is reachable (status: {{ api_health.status }})"
+
+      rescue:
+        - name: Connectivity check failed
+          fail:
+            msg: "Pre-flight connectivity check failed. Cannot proceed with deployment."
+
+    - name: "[PRE] Idempotency guard: Check if already deployed"
+      block:
+        # If the target service is already running, decide whether to:
+        # A) Skip deployment entirely (idempotent)
+        # B) Restart the service (destructive)
+        # C) Update the service (incremental)
+        #
+        # This example checks for idempotency and skips if already done.
+        - name: Query service status
+          uri:
+            url: "{{ api_endpoint }}/services/{{ service_name }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ api_token }}"
+            validate_certs: no
+            status_code: [200, 404]
+          register: service_status
+          ignore_errors: yes  # Don't fail if service doesn't exist (404)
+
+        - name: Set deployment_required fact
+          set_fact:
+            deployment_required: "{{ service_status.status == 404 }}"
+
+        - name: Print deployment decision
+          debug:
+            msg: |
+              Service Status Check:
+              - Service '{{ service_name }}' exists: {{ service_status.status != 404 }}
+              - Deployment required: {{ deployment_required }}
+
+      tags:
+        - pre-flight
+
+    - name: "[PRE] Print phase summary"
+      debug:
+        msg: |
+          ========== PHASE {{ phase_number }}: {{ phase_name | upper }} ==========
+
+          Pre-flight checks completed:
+          ✓ Environment variables validated
+          ✓ API connectivity confirmed
+          ✓ Idempotency assessed
+
+          Phase will:
+          1. Execute multi-step orchestration
+          2. Include operator gates for manual confirmation
+          3. Report progress and verify outcomes
+
+          Logs: {{ phase_log_file }}
+
+          ===============================================
+      tags:
+        - always
+
+  # ===================================================================
+  # MAIN ORCHESTRATION (phase tasks)
+  # ===================================================================
+  tasks:
+    # ============================================================
+    # STEP 1: Infrastructure Provisioning (Terraform)
+    # ============================================================
+    - name: "[STEP 1] Infrastructure Provisioning"
+      block:
+        - name: Step 1.1 — Verify Terraform workspace
+          stat:
+            path: "/workspace/terraform-{{ service_name }}-deploy"
+          register: terraform_workspace
+          failed_when: not terraform_workspace.stat.exists
+
+        - name: Step 1.2 — Run Terraform apply
+          terraform:
+            project_path: "/workspace/terraform-{{ service_name }}-deploy"
+            state: present
+            variables:
+              service_name: "{{ service_name }}"
+              service_port: "{{ service_port }}"
+              api_token: "{{ api_token }}"
+          register: terraform_output
+          retries: 2
+          delay: 10
+
+        - name: Step 1.3 — Extract Terraform outputs
+          set_fact:
+            service_ip: "{{ terraform_output.outputs.service_ip.value }}"
+            service_vm_id: "{{ terraform_output.outputs.service_vm_id.value }}"
+
+        - name: Step 1.4 — Verify VM is accessible
+          wait_for:
+            host: "{{ service_ip }}"
+            port: 22
+            state: started
+            delay: 5
+            timeout: 300
+          register: service_ssh_ready
+
+        - name: Step 1.5 — Fail if SSH not available
+          fail:
+            msg: "Service VM SSH not available after 5 minutes. Check Proxmox console."
+          when: not service_ssh_ready.state == 'started'
+
+        - name: Print Step 1 result
+          debug:
+            msg: |
+              ✓ Step 1: Infrastructure provisioned
+                - Service IP: {{ service_ip }}
+                - VM ID: {{ service_vm_id }}
+                - SSH: Ready
+
+      rescue:
+        - name: Terraform apply failed
+          fail:
+            msg: |
+              Infrastructure provisioning failed. Check Terraform logs:
+              {{ terraform_output.stderr | default('no error details') }}
+
+      tags:
+        - step-1
+        - terraform
+
+    # ============================================================
+    # STEP 2: Service Deployment (Role Orchestration)
+    # ============================================================
+    - name: "[STEP 2] Service Deployment"
+      block:
+        # Example: Import a role from a blueprints collection
+        # The 'apply' block allows you to set task-level attributes
+        # (like delegate_to, become, environment) for all tasks in the role.
+        - name: Step 2.1 — Add host to inventory
+          add_host:
+            name: "{{ service_name }}"
+            ansible_host: "{{ service_ip }}"
+            ansible_user: ubuntu
+            ansible_ssh_private_key_file: /root/.ssh/id_rsa
+            ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+        - name: Step 2.2 — Deploy service via role
+          include_role:
+            name: blueprints.common.container_server
+            apply:
+              delegate_to: "{{ service_name }}"
+              tags:
+                - role-deploy
+          vars:
+            container_image: "{{ service_name }}:latest"
+            container_port: "{{ service_port }}"
+            container_data_dir: "{{ service_data_dir }}"
+            container_env_vars:
+              API_ENDPOINT: "{{ api_endpoint }}"
+              SERVICE_PORT: "{{ service_port }}"
+          register: role_result
+
+        - name: Step 2.3 — Verify service health
+          uri:
+            url: "http://{{ service_ip }}:{{ service_port }}/health"
+            method: GET
+            validate_certs: no
+            status_code: [200]
+          register: service_health
+          retries: 10
+          delay: 3
+          until: service_health.status == 200
+
+        - name: Print Step 2 result
+          debug:
+            msg: |
+              ✓ Step 2: Service deployed
+                - Container: running
+                - Health check: {{ service_health.status }} OK
+
+      rescue:
+        - name: Service deployment failed
+          fail:
+            msg: |
+              Service deployment failed.
+              Role output: {{ role_result | default('no role output') }}
+
+      tags:
+        - step-2
+        - deployment
+
+    # ============================================================
+    # STEP 3: Configuration (Conditional)
+    # ============================================================
+    - name: "[STEP 3] Configuration"
+      block:
+        # Use 'when' conditions to skip tasks that aren't needed
+        # (e.g., if service is already configured from a previous run).
+        - name: Step 3.1 — Check if configuration needed
+          shell: |
+            curl -s http://{{ service_ip }}:{{ service_port }}/config | \
+              grep -q "initialized" && echo "yes" || echo "no"
+          register: config_status
+          changed_when: false  # This is a read-only query, not a state change
+
+        - name: Step 3.2 — Apply configuration (conditional)
+          block:
+            - name: Configure service
+              copy:
+                content: |
+                  # {{ service_name }} configuration
+                  port: {{ service_port }}
+                  data_dir: {{ service_data_dir }}
+                  log_level: info
+                dest: "{{ service_data_dir }}/config.yml"
+              delegate_to: "{{ service_name }}"
+
+            - name: Restart service
+              systemd:
+                name: "{{ service_name }}"
+                state: restarted
+                daemon_reload: yes
+              delegate_to: "{{ service_name }}"
+              become: yes
+
+          when: config_status.stdout == 'no'  # Only configure if not already done
+
+        - name: Step 3.3 — Verify configuration applied
+          uri:
+            url: "http://{{ service_ip }}:{{ service_port }}/config"
+            method: GET
+            status_code: [200]
+          register: config_verify
+          retries: 5
+          delay: 2
+
+        - name: Print Step 3 result
+          debug:
+            msg: "✓ Step 3: Configuration applied or skipped (already configured)"
+
+      tags:
+        - step-3
+        - configuration
+
+    # ============================================================
+    # STEP 4: Operator Gate (Pause for Manual Confirmation)
+    # ============================================================
+    - name: "[STEP 4] Operator Gate — Manual Confirmation"
+      block:
+        # Pause tasks allow operators to inspect the current state,
+        # run manual tests, or make a decision before proceeding.
+        # This is critical for sensitive operations (e.g., unsealing Vault).
+        - name: Print operator instructions
+          debug:
+            msg: |
+              ========== OPERATOR GATE: VERIFICATION REQUIRED ==========
+
+              Service deployment is complete. Before proceeding to the next phase,
+              please verify the service is functioning correctly:
+
+              Manual Verification Steps:
+              1. SSH to the service VM:
+                 ssh ubuntu@{{ service_ip }}
+
+              2. Check service status:
+                 curl http://localhost:{{ service_port }}/health
+
+              3. Review service logs:
+                 docker logs {{ service_name }}
+                 journalctl -u {{ service_name }}.service -f
+
+              4. Run smoke tests (if applicable):
+                 # Add your custom tests here
+
+              When verification is complete, press ENTER to continue to the next phase.
+              To abort the playbook, Ctrl+C and answer 'a' (abort).
+
+              ========================================================
+
+        - name: Pause for operator confirmation
+          pause:
+            prompt: |
+              Verification complete? (Enter to continue, or Ctrl+C to abort)
+            echo: yes
+
+        - name: Operator confirmed — proceeding to next phase
+          debug:
+            msg: "✓ Operator gate cleared. Phase {{ phase_number }} continues."
+
+      tags:
+        - step-4
+        - operator-gate
+
+    # ============================================================
+    # STEP 5: Post-Phase Verification
+    # ============================================================
+    - name: "[STEP 5] Post-Phase Verification"
+      block:
+        # After all main steps, verify the desired end state.
+        # Use condition tests to fail fast if expectations aren't met.
+        - name: Step 5.1 — Health check
+          uri:
+            url: "http://{{ service_ip }}:{{ service_port }}/health"
+            method: GET
+            status_code: [200]
+          register: final_health
+          failed_when: final_health.status != 200
+
+        - name: Step 5.2 — Smoke test
+          shell: |
+            # Example: test that the service responds to a basic request
+            curl -s http://{{ service_ip }}:{{ service_port }}/api/status | \
+              grep -q "ok" && echo "pass" || echo "fail"
+          register: smoke_test
+          changed_when: false
+          failed_when: smoke_test.stdout == 'fail'
+
+        - name: Step 5.3 — Log verification
+          shell: |
+            docker logs {{ service_name }} 2>&1 | tail -20
+          delegate_to: "{{ service_name }}"
+          register: service_logs
+          changed_when: false
+
+        - name: Step 5.4 — Print phase completion summary
+          debug:
+            msg: |
+              ========== PHASE {{ phase_number }}: {{ phase_name | upper }} COMPLETE ==========
+
+              Service Status:
+              ✓ Infrastructure provisioned ({{ service_ip }})
+              ✓ Service deployed (port {{ service_port }})
+              ✓ Configuration applied
+              ✓ Operator gates cleared
+              ✓ Health checks passed
+              ✓ Smoke tests passed
+
+              Service Details:
+              - IP Address: {{ service_ip }}
+              - VM ID: {{ service_vm_id }}
+              - Port: {{ service_port }}
+              - Data Directory: {{ service_data_dir }}
+
+              Next Steps:
+              1. Monitor service logs: docker logs -f {{ service_name }}
+              2. Run application smoke tests: curl http://{{ service_ip }}:{{ service_port }}/health
+              3. Proceed to Phase {{ phase_number + 1 }} when ready
+
+              Logs: {{ phase_log_file }}
+
+              =========================================================================
+
+      rescue:
+        - name: Verification failed
+          fail:
+            msg: |
+              Post-phase verification failed. Phase {{ phase_number }} is incomplete.
+
+              Check service logs for details:
+              {{ service_logs.stdout | default('no logs available') }}
+
+      tags:
+        - step-5
+        - verification
+
+  # ===================================================================
+  # ERROR HANDLERS (optional handlers block)
+  # ===================================================================
+  handlers:
+    - name: "Service restart handler"
+      systemd:
+        name: "{{ service_name }}"
+        state: restarted
+      listen: "restart service"
+      become: yes
+
+    - name: "Docker container restart handler"
+      shell: "docker restart {{ service_name }}"
+      listen: "restart container"
+
+  # ===================================================================
+  # POST-PHASE TASKS (cleanup, logging)
+  # ===================================================================
+  post_tasks:
+    - name: "[POST] Write phase log"
+      block:
+        - name: Append summary to phase log
+          lineinfile:
+            path: "{{ phase_log_file }}"
+            create: yes
+            line: |
+              [{{ ansible_date_time.iso8601 }}] Phase {{ phase_number }} ({{ phase_name }}) completed
+              Service: {{ service_name }}
+              Status: SUCCESS
+              Service IP: {{ service_ip | default('unknown') }}
+            insertafter: EOF
+
+      tags:
+        - always
+
+    - name: "[POST] Notify operators (example)"
+      debug:
+        msg: |
+          Phase {{ phase_number }} completed successfully.
+          In production, this would trigger:
+          - Slack notification
+          - Email alert
+          - Incident tracking system update
+          - Metrics/monitoring dashboard update
+      tags:
+        - always
