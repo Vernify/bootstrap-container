@@ -43,37 +43,34 @@ collections:
     type: git
     version: c79113c18f5dbfcc99d7f7f927db7015c39c5055  # origin/main as of this fix
 
-  # BLOCKED: https://github.com/iac-foundry/ansible-collection-step-ca does not
-  # exist on GitHub yet (confirmed 404 via `gh repo view` / `git ls-remote`) —
-  # the local repo's commits were never pushed. A commit SHA pin only works if
-  # ansible-galaxy can fetch that commit from the remote, so this entry cannot
-  # be fixed the same way as the others until the repo is created/pushed.
-  # Left pointing at `main` intentionally; needs a human decision (push the
-  # local repo to a new public GitHub repo) before this can be pinned.
+  # The step-ca collection now exists on GitHub. Its default (and only)
+  # branch is feat/phase-3-5-bootstrap -- this engagement's branch-only
+  # working model never pushes to main, so pin to the actual HEAD commit
+  # on that branch, same as the other git-source collections below.
   - name: blueprints.step_ca
     source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
-    version: main
+    version: bd5070da812cecc1e34c5d9eec738dffadcad3cc  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
     type: git
-    version: 186ede2528c1cb3441278be4b6a6c36525e8b858  # origin/main as of this fix; local main is 7 commits ahead (unpushed)
+    version: 5aaf174eae3495068ccbce6dfcb8e40ea02dd0eb  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
     type: git
-    version: 52b36691830522b7c3e3f2893bb401c24c8ba86b  # origin/main as of this fix; local main is 5 commits ahead (unpushed)
+    version: bb546c29e1cc241d9205e5835b739b19f8a4bf3e  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
     type: git
-    version: 9df46541db53401bafc1b14e38e2015af5baa766  # origin/main as of this fix; local main is 3 commits ahead (unpushed)
+    version: 350eef663307bfc90fe8234b1d877c7f363fa4cf  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
     type: git
-    version: b6666211042c567342de19c77f20fa65262c8b38  # origin/main as of this fix; local main is 5 commits ahead (unpushed)
+    version: 5e7d51c64a0c35b79df43823ee6e658995cf3f0b  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.graylog
     source: https://github.com/iac-foundry/ansible-collection-graylog
