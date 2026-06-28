@@ -4,6 +4,14 @@
 >
 > Follow this runbook to prepare the bootstrap container with your secrets, then use it to execute
 > Phases 1–5. Retire the container at the end of Phase 5 once Jenkins and Vault own automation.
+>
+> **This is a first-time, learning-oriented walkthrough.** If you've already done this once and
+> need day-by-day operator procedures for Phase 3-5 specifically — pre-flight checklists, gated
+> verification steps, and troubleshooting — see
+> [`PHASE_3_5_OPERATOR_RUNBOOK.md`](https://github.com/Vernify/roadmap/blob/main/PHASE_3_5_OPERATOR_RUNBOOK.md)
+> in `vernify/roadmap` instead. For recovering from data loss after a deployment exists, see
+> [`DISASTER_RECOVERY_PROCEDURES.md`](https://github.com/Vernify/roadmap/blob/main/DISASTER_RECOVERY_PROCEDURES.md)
+> in the same repo.
 
 ---
 
