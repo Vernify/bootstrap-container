@@ -9,7 +9,7 @@
 #
 # Real role FQCNs and variable names (verified against
 # meta/argument_specs.yml / defaults/main.yml / tasks/main.yml on
-# feat/phase-b-collections):
+# feat/phase-3-5-bootstrap):
 #   blueprints.jenkins.agent              -> jenkins_agent_* (NOTE: this role
 #                                             has no jenkins_controller_token
 #                                             or jenkins_agent_labels inputs —
@@ -25,25 +25,29 @@
 #                                             registration path in this role).
 #                                             It also sets no facts/outputs.)
 #   blueprints.vault_integrations.vault_agent -> vault_integration_vault_*
-#                                             (NOTE: argument_specs.yml for
-#                                             this role is STALE — it is a
-#                                             copy of the sibling ldap_auth
-#                                             role's spec and documents
+#                                             (RESOLVED: argument_specs.yml for
+#                                             this role previously was a copy
+#                                             of the sibling ldap_auth role's
+#                                             spec and documented
 #                                             vault_integration_ldap_*
 #                                             variables that the real
-#                                             tasks/main.yml never reads.
-#                                             The real required vars per
-#                                             tasks/main.yml/defaults/main.yml
-#                                             are vault_integration_vault_endpoint/
-#                                             _role_id/_secret_id. This is a
-#                                             documented Phase B gap.)
+#                                             tasks/main.yml never read. That
+#                                             spec/code mismatch was fixed
+#                                             (commit aa33fd1 and related) —
+#                                             argument_specs.yml now correctly
+#                                             documents
+#                                             vault_integration_vault_endpoint/
+#                                             _role_id/_secret_id, matching
+#                                             this playbook's variable names.)
 #
-# KNOWN GAP: blueprints.vault_integrations.vault_agent did not exist at all
-# on the collection's `main` branch at the time this playbook was written —
-# it exists only on feat/phase-b-collections (not yet merged). This
-# orchestration playbook assumes that branch is merged (or pinned via
-# requirements.yml) before Phase 5 actually runs. See
-# docs/delivery/COLLECTION_ROLE_INVENTORY.md.
+# RESOLVED (previously tracked as a KNOWN GAP): blueprints.vault_integrations.vault_agent
+# did not exist at all on the collection's `main` branch when this playbook
+# was first written; it existed only on the unmerged feat/phase-b-collections
+# branch. The role now exists, with a correct argument_specs.yml, merged into
+# the feat/phase-3-5-bootstrap branch of ansible-collection-vault-integrations
+# — the branch this playbook itself ships on. No outstanding dependency on an
+# unmerged branch remains. See docs/delivery/COLLECTION_ROLE_INVENTORY.md for
+# the historical record of this gap.
 
 - name: "Phase 5 — Build Capacity (agent01) Orchestration"
   hosts: localhost

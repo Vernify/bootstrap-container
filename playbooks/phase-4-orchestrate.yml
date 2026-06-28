@@ -7,34 +7,34 @@
 # and wires it to Vault using the Jenkins AppRole created in Phase 3.
 #
 # Real role FQCNs and variable names (verified against
-# meta/argument_specs.yml / defaults/main.yml on feat/phase-b-collections):
+# meta/argument_specs.yml / defaults/main.yml on feat/phase-3-5-bootstrap):
 #   blueprints.jenkins.container_server        -> jenkins_server_*
 #   blueprints.jenkins_integrations.vault_auth -> jenkins_integration_vault_*
-#                                                  (NOTE: argument_specs.yml
-#                                                  for this role is STALE —
-#                                                  it documents
+#                                                  (RESOLVED: argument_specs.yml
+#                                                  for this role previously
+#                                                  documented
 #                                                  jenkins_integration_vault_client_id/
 #                                                  _client_secret, which the
 #                                                  real tasks/main.yml never
-#                                                  reads. The real required
-#                                                  vars per tasks/main.yml and
-#                                                  defaults/main.yml are
+#                                                  read. That spec/code mismatch
+#                                                  was fixed (commit aa33fd1 and
+#                                                  related) — argument_specs.yml
+#                                                  now correctly documents
 #                                                  jenkins_integration_vault_endpoint/
 #                                                  _role_id/_secret_id plus
 #                                                  jenkins_integration_jenkins_url/
-#                                                  _admin_user/_admin_password.
-#                                                  This is a documented Phase B
-#                                                  gap, not a typo here —
-#                                                  this playbook uses the REAL
+#                                                  _admin_user/_admin_password,
+#                                                  matching this playbook's
 #                                                  variable names.)
 #
-# KNOWN GAP: blueprints.jenkins.container_server's defaults/main.yml exposes
-# jenkins_server_vault_url/_role_id/_secret_id "for jenkins_integrations.vault_auth
-# role to fill", but vault_auth's tasks/main.yml only sets those same three
-# facts as outputs — it does not write them back into a running Jenkins
-# container's config. The actual credential write happens via Jenkins'
-# REST API (vault_auth's "Create Jenkins Credentials" task), so no extra
-# wiring is needed here; documented for traceability.
+# RESOLVED (previously tracked as a KNOWN GAP): blueprints.jenkins.container_server's
+# defaults/main.yml exposes jenkins_server_vault_url/_role_id/_secret_id "for
+# jenkins_integrations.vault_auth role to fill", but vault_auth's tasks/main.yml
+# only sets those same three facts as outputs — it does not write them back
+# into a running Jenkins container's config. The actual credential write
+# happens via Jenkins' REST API (vault_auth's "Create Jenkins Credentials"
+# task), so no extra wiring is needed here. This is expected behaviour, not a
+# gap; kept here for traceability.
 
 - name: "Phase 4 — CI Core (docker01) Orchestration"
   hosts: localhost
