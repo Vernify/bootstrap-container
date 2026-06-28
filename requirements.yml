@@ -11,7 +11,7 @@
 #   External collections are pinned to semantic versions for stability.
 #   Update versions incrementally after validating backward compatibility.
 #   As of June 2026:
-#     - community.docker: >=1.10.0,<2.0.0 (container lifecycle management)
+#     - community.docker: >=3.10.0,<4.0.0 (container lifecycle management)
 #     - community.general: >=3.0.0,<4.0.0 (general utilities)
 #     - community.hashi_vault: >=1.0.0,<2.0.0 (Vault API integration)
 #
@@ -59,9 +59,11 @@ collections:
     version: main
 
   # --- Community Collections (Source: Ansible Galaxy) ---
-  # Docker container lifecycle management (required for container_server roles)
+  # Docker container lifecycle management (required for container_server roles
+  # in blueprints.step_ca, blueprints.vault, and blueprints.jenkins, which use
+  # community.docker.docker_container at runtime)
   - name: community.docker
-    version: ">=1.10.0,<2.0.0"
+    version: ">=3.10.0,<4.0.0"
 
   # General utilities and file/template operations
   - name: community.general
