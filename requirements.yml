@@ -2,10 +2,25 @@
 # ---------------------------------------------------------------------------
 # Vernify Bootstrap Container — Ansible Galaxy requirements
 #
-# Blueprints collections: Git source with main branch
-#   All blueprints.* collections are pinned to a specific Git ref.
-#   During Phase 0 the container is built from these refs; update the ref
-#   to consume a newer collection version and rebuild the image.
+# Blueprints collections: Git source pinned to a commit SHA (interim fix)
+#   All blueprints.* collections are pinned to a specific Git commit SHA,
+#   not a branch name. This is a deliberate interim measure (DEF-2).
+#   IMPORTANT: pinning to a SHA changes the *symptom* but does not by itself
+#   stop ansible-galaxy from crashing on re-install. ansible-galaxy's
+#   meets_requirements() unconditionally feeds the requirement string through
+#   LooseVersion()/SemanticVersion.from_loose_version() whenever a collection
+#   with a matching fqcn is already installed -- and a 40-char git SHA is just
+#   as unparseable to that code as the branch name `main` was, raising the same
+#   `ValueError: Non integer values in LooseVersion (...)`. Confirmed by testing
+#   both `version: main` and a SHA pin against an already-installed collection.
+#   The actual bypass is `--force` (or `--force-with-deps`): ansible-galaxy's
+#   own source skips the meets_requirements() comparison entirely when --force
+#   is passed (see ansible/galaxy/collection/__init__.py, install_collections).
+#   ALWAYS install/re-install with --force:
+#     ansible-galaxy collection install -r requirements.yml --force
+#   To consume a newer collection version: get the new HEAD SHA from the
+#   collection's repo (`git rev-parse origin/main`) and update the `version:`
+#   value below, then rebuild the image.
 #
 # Community collections: Galaxy source with semantic versioning
 #   External collections are pinned to semantic versions for stability.
@@ -17,7 +32,7 @@
 #
 # To update a community collection version:
 #   1. Edit the version constraint (e.g., ">=X.Y.Z,<(X+1).0.0")
-#   2. Run: ansible-galaxy collection install -r requirements.yml
+#   2. Run: ansible-galaxy collection install -r requirements.yml --force
 #   3. Validate playbook syntax: ansible-playbook --syntax-check playbooks/*.yml
 #   4. Test in dev environment before deploying to production
 # ---------------------------------------------------------------------------
@@ -26,8 +41,15 @@ collections:
   - name: blueprints.common
     source: https://github.com/iac-foundry/ansible-collection-common
     type: git
-    version: main
+    version: c79113c18f5dbfcc99d7f7f927db7015c39c5055  # origin/main as of this fix
 
+  # BLOCKED: https://github.com/iac-foundry/ansible-collection-step-ca does not
+  # exist on GitHub yet (confirmed 404 via `gh repo view` / `git ls-remote`) —
+  # the local repo's commits were never pushed. A commit SHA pin only works if
+  # ansible-galaxy can fetch that commit from the remote, so this entry cannot
+  # be fixed the same way as the others until the repo is created/pushed.
+  # Left pointing at `main` intentionally; needs a human decision (push the
+  # local repo to a new public GitHub repo) before this can be pinned.
   - name: blueprints.step_ca
     source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
@@ -36,27 +58,27 @@ collections:
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
     type: git
-    version: main
+    version: 186ede2528c1cb3441278be4b6a6c36525e8b858  # origin/main as of this fix; local main is 7 commits ahead (unpushed)
 
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
     type: git
-    version: main
+    version: 52b36691830522b7c3e3f2893bb401c24c8ba86b  # origin/main as of this fix; local main is 5 commits ahead (unpushed)
 
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
     type: git
-    version: main
+    version: 9df46541db53401bafc1b14e38e2015af5baa766  # origin/main as of this fix; local main is 3 commits ahead (unpushed)
 
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
     type: git
-    version: main
+    version: b6666211042c567342de19c77f20fa65262c8b38  # origin/main as of this fix; local main is 5 commits ahead (unpushed)
 
   - name: blueprints.graylog
     source: https://github.com/iac-foundry/ansible-collection-graylog
     type: git
-    version: main
+    version: 0936762c227afbe29693d465d8aa5d8e01e3336a  # origin/main as of this fix (local and origin agree)
 
   # --- Community Collections (Source: Ansible Galaxy) ---
   # Docker container lifecycle management (required for container_server roles

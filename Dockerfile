@@ -85,7 +85,7 @@ RUN mkdir -p /tmp/step-extract \
 # ── Ansible Galaxy collections (blueprints.*) ───────────────────────────────
 WORKDIR /bootstrap
 COPY requirements.yml ./
-RUN ansible-galaxy collection install -r requirements.yml \
+RUN ansible-galaxy collection install -r requirements.yml --force \
     && ansible-galaxy collection list
 
 # ── entrypoint ──────────────────────────────────────────────────────────────
