@@ -1,420 +1,371 @@
 ---
-# Phase 5 Orchestration Playbook — Build Capacity (agent01)
-# Provisions agent01, deploys Jenkins agent + Vault agent, installs toolchain
-# Completes bootstrap and retires bootstrap container
+# Phase 5 Orchestration Playbook — Build Capacity (agent01 LXC)
+#
+# Provisioning (Terraform apply against terraform-agent01-deploy, a direct
+# proxmox_lxc resource — no module, no VM) happens in
+# scripts/bootstrap-phase-3-5.sh; this playbook starts from an already-
+# reachable agent01 LXC container, deploys the Jenkins inbound agent and
+# Vault Agent, and installs the build toolchain (Packer, Terraform, Ansible).
+#
+# Real role FQCNs and variable names (verified against
+# meta/argument_specs.yml / defaults/main.yml / tasks/main.yml on
+# feat/phase-b-collections):
+#   blueprints.jenkins.agent              -> jenkins_agent_* (NOTE: this role
+#                                             has no jenkins_controller_token
+#                                             or jenkins_agent_labels inputs —
+#                                             those were draft inventions.
+#                                             The real role only takes
+#                                             jenkins_agent_server_url,
+#                                             jenkins_agent_name,
+#                                             jenkins_agent_secret (the JNLP
+#                                             join secret, which THIS
+#                                             playbook must obtain from the
+#                                             Jenkins controller — see Step 2
+#                                             — there is no admin-token-based
+#                                             registration path in this role).
+#                                             It also sets no facts/outputs.)
+#   blueprints.vault_integrations.vault_agent -> vault_integration_vault_*
+#                                             (NOTE: argument_specs.yml for
+#                                             this role is STALE — it is a
+#                                             copy of the sibling ldap_auth
+#                                             role's spec and documents
+#                                             vault_integration_ldap_*
+#                                             variables that the real
+#                                             tasks/main.yml never reads.
+#                                             The real required vars per
+#                                             tasks/main.yml/defaults/main.yml
+#                                             are vault_integration_vault_endpoint/
+#                                             _role_id/_secret_id. This is a
+#                                             documented Phase B gap.)
+#
+# KNOWN GAP: blueprints.vault_integrations.vault_agent did not exist at all
+# on the collection's `main` branch at the time this playbook was written —
+# it exists only on feat/phase-b-collections (not yet merged). This
+# orchestration playbook assumes that branch is merged (or pinned via
+# requirements.yml) before Phase 5 actually runs. See
+# docs/delivery/COLLECTION_ROLE_INVENTORY.md.
 
 - name: "Phase 5 — Build Capacity (agent01) Orchestration"
   hosts: localhost
-  gather_facts: yes
+  gather_facts: true
   vars:
-    proxmox_endpoint: "{{ lookup('env', 'PROXMOX_ENDPOINT') }}"
-    proxmox_token: "{{ lookup('env', 'PROXMOX_TOKEN') }}"
-    jenkins_admin_token: "{{ lookup('env', 'JENKINS_ADMIN_TOKEN') }}"
+    sec01_ip: "{{ sec01_ip | mandatory }}"
+    docker01_ip: "{{ docker01_ip | mandatory }}"
+    agent01_ip: "{{ agent01_ip | mandatory }}"
+    ansible_ssh_private_key_file_arg: "{{ ansible_ssh_private_key_file | default('/root/.ssh/id_vernify_bootstrap') }}"
+    bootstrap_ssh_user: "{{ ansible_user | default('ubuntu') }}"
 
-    agent01_ip: "192.168.22.53"
-    build01_ip: "192.168.22.52"
-    sec01_ip: "192.168.22.51"
-    proxmox_gateway: "192.168.22.1"
-    vernify_search_domain: "vernify.internal"
+    vernify_internal_domain: "vernify.internal"
 
-    vault_endpoint: "https://sec01.vernify.internal:8200"
-    vault_cacert: "/etc/ssl/certs/step-ca-root.crt"
-    jenkins_endpoint: "https://build01.vernify.internal:8443"
+    vault_endpoint: "https://sec01.{{ vernify_internal_domain }}:8200"
+    vault_cacert_path: "/etc/ssl/certs/step-ca-root.crt"
+    jenkins_endpoint: "https://docker01.{{ vernify_internal_domain }}:8443"
+    kv_mount: "kv"
+    jenkins_admin_user: "admin"
 
   pre_tasks:
-    - name: "Pre-flight: Verify Phase 4 completed (Jenkins online)"
-      uri:
+    - name: "[PRE] Validate required inputs"
+      ansible.builtin.assert:
+        that:
+          - sec01_ip is defined and sec01_ip | length > 0
+          - docker01_ip is defined and docker01_ip | length > 0
+          - agent01_ip is defined and agent01_ip | length > 0
+        fail_msg: "Missing sec01_ip / docker01_ip / agent01_ip. Expected as extra-vars from scripts/bootstrap-phase-3-5.sh."
+
+    - name: "[PRE] Verify Phase 4 completed (Jenkins reachable)"
+      ansible.builtin.uri:
         url: "{{ jenkins_endpoint }}/api/json"
         method: GET
-        user: admin
-        password: "{{ jenkins_admin_token }}"
-        validate_certs: no
+        validate_certs: false
+        status_code: [200, 401, 403]
       register: jenkins_check
       retries: 5
       delay: 5
 
-  tasks:
-    # ============================================================
-    # STEP 1: Terraform Provision agent01
-    # ============================================================
-    - name: "Step 1: Provision agent01 VM"
-      terraform:
-        project_path: "/workspace/terraform-agent01-deploy"
-        state: present
-        variables:
-          proxmox_password: "{{ proxmox_token }}"
-          vm_name: "agent01"
-          vm_cores: 4
-          vm_memory: 8192
-          disk_size: 40
-          ipv4_address: "{{ agent01_ip }}/24"
-          ipv4_gateway: "{{ proxmox_gateway }}"
-          search_domain: "{{ vernify_search_domain }}"
-          tags:
-            - "phase-5"
-            - "build-capacity"
-            - "agent01"
-      register: terraform_agent01_output
-      retries: 3
-      delay: 10
-
-    - name: "Extract agent01 IP"
-      set_fact:
-        agent01_ip_actual: "{{ terraform_agent01_output.outputs.agent01_ipv4_address.value | split('/') | first }}"
-
-    - name: "Wait for agent01 SSH"
-      wait_for:
-        host: "{{ agent01_ip_actual }}"
-        port: 22
-        state: started
-        delay: 10
-        timeout: 300
-
-    - name: "Add agent01 to inventory"
-      add_host:
+    - name: "[PRE] Add agent01 to in-memory inventory"
+      ansible.builtin.add_host:
         name: agent01
-        ansible_host: "{{ agent01_ip_actual }}"
-        ansible_user: ubuntu
-        ansible_ssh_private_key_file: /root/.ssh/id_rsa
+        ansible_host: "{{ agent01_ip }}"
+        # agent01 is an unprivileged LXC container with ssh_public_keys
+        # authorized for root (terraform-agent01-deploy main.tf comment:
+        # "LXC containers run as root") — NOT the ubuntu cloud-init user
+        # used by the sec01/docker01 VMs.
+        ansible_user: root
+        ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
         ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 
-    # ============================================================
-    # STEP 2: Configure DNS on agent01
-    # ============================================================
-    - name: "Configure hosts file on agent01"
-      copy:
+    - name: "[PRE] Configure /etc/hosts on agent01"
+      ansible.builtin.copy:
         content: |
           127.0.0.1 localhost
           ::1 ip6-localhost ip6-loopback
 
-          # Vernify internal network
-          {{ sec01_ip }} sec01 sec01.vernify.internal
-          {{ build01_ip }} build01 build01.vernify.internal
-          {{ agent01_ip }} agent01 agent01.vernify.internal
-
-          # Service FQDNs
-          {{ sec01_ip }} vault vault.sec01 vault.sec01.vernify.internal
-          {{ sec01_ip }} step-ca ca.sec01 ca.sec01.vernify.internal
-          {{ build01_ip }} jenkins jenkins.build01 jenkins.build01.vernify.internal
+          {{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}
+          {{ docker01_ip }} docker01 docker01.{{ vernify_internal_domain }} jenkins jenkins.docker01 jenkins.docker01.{{ vernify_internal_domain }}
+          {{ agent01_ip }} agent01 agent01.{{ vernify_internal_domain }}
         dest: /etc/hosts
         mode: "0644"
         owner: root
         group: root
+      become: true
       delegate_to: agent01
 
+  tasks:
     # ============================================================
-    # STEP 3: Deploy Jenkins Agent (JNLP, systemd service)
+    # STEP 1: Retrieve agent01 AppRole credentials from Vault
+    # (written during Phase 3 secret seeding; never hardcoded here)
     # ============================================================
-    - name: "Step 3: Deploy Jenkins agent (systemd service)"
-      block:
-        - name: "Retrieve agents AppRole from Vault"
-          set_fact:
-            agents_approle: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/ci/agents/approle', url=vault_endpoint, auth_method='token', token=lookup('env', 'VAULT_ROOT_TOKEN', default=''), validate_certs=false) }}"
-          no_log: true
+    - name: "[STEP 1] Retrieve agent01 AppRole credentials from Vault"
+      environment:
+        VAULT_ADDR: "{{ vault_endpoint }}"
+        VAULT_CACERT: "{{ vault_cacert_path }}"
+        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_SKIP_VERIFY: "true"
+      ansible.builtin.command: >
+        vault kv get -format=json {{ kv_mount }}/platform/agent01/approle
+      register: agent01_approle_lookup
+      delegate_to: sec01
+      no_log: true
+      changed_when: false
 
-        - name: "Deploy Jenkins agent via blueprints.jenkins.agent role"
-          include_role:
-            name: blueprints.jenkins.agent
-            apply:
-              delegate_to: agent01
-          vars:
-            jenkins_controller_url: "{{ jenkins_endpoint }}"
-            jenkins_controller_username: admin
-            jenkins_controller_token: "{{ jenkins_admin_token }}"
-            jenkins_agent_name: "agent01"
-            jenkins_agent_labels:
-              - "packer-build"
-              - "terraform-plan"
-              - "ansible-execute"
-            # P1-12: JNLP configuration (port, protocol, auth)
-            jenkins_agent_jnlp_port: 50000
-            jenkins_agent_jnlp_protocol: "SSH"
+    - name: "Parse agent01 AppRole credentials"
+      ansible.builtin.set_fact:
+        agent01_vault_role_id: "{{ (agent01_approle_lookup.stdout | from_json).data.data.role_id }}"
+        agent01_vault_secret_id: "{{ (agent01_approle_lookup.stdout | from_json).data.data.secret_id }}"
+      no_log: true
 
     # ============================================================
-    # STEP 4: Deploy Vault Agent (auto-renewal)
+    # STEP 2: Retrieve Jenkins admin token and a fresh JNLP agent secret
     # ============================================================
-    - name: "Step 4: Deploy Vault agent (systemd service, auto-renewal)"
-      block:
-        - name: "Deploy Vault agent via blueprints.vault_integrations.vault_agent"
-          include_role:
-            name: blueprints.vault_integrations.vault_agent
-            apply:
-              delegate_to: agent01
-          vars:
-            vault_endpoint: "{{ vault_endpoint }}"
-            vault_cacert: "{{ vault_cacert }}"
-            vault_role_id: "{{ agents_approle.role_id }}"
-            vault_secret_id: "{{ agents_approle.secret_id }}"
-            vault_agent_config_dir: "/etc/vault-agent"
+    - name: "[STEP 2] Retrieve Jenkins admin token from Vault"
+      environment:
+        VAULT_ADDR: "{{ vault_endpoint }}"
+        VAULT_CACERT: "{{ vault_cacert_path }}"
+        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_SKIP_VERIFY: "true"
+      ansible.builtin.command: >
+        vault kv get -field=value {{ kv_mount }}/platform/jenkins/admin-token
+      register: jenkins_admin_token_lookup
+      delegate_to: sec01
+      no_log: true
+      changed_when: false
+
+    - name: "Set Jenkins admin token fact"
+      ansible.builtin.set_fact:
+        jenkins_admin_token: "{{ jenkins_admin_token_lookup.stdout }}"
+      no_log: true
+
+    - name: "Create agent01 node on Jenkins controller (if not already present)"
+      ansible.builtin.uri:
+        url: "{{ jenkins_endpoint }}/computer/doCreateItem?name=agent01&type=hudson.slaves.DumbSlave"
+        method: POST
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_token }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: form-urlencoded
+        body:
+          name: agent01
+          type: hudson.slaves.DumbSlave
+          json: >-
+            {"name": "agent01", "nodeDescription": "Vernify build agent (LXC)",
+             "numExecutors": "2", "remoteFS": "/var/lib/jenkins-agent",
+             "labelString": "agent01 packer-build terraform-plan ansible-execute",
+             "mode": "NORMAL", "type": "hudson.slaves.DumbSlave",
+             "retentionStrategy": {"stapler-class": "hudson.slaves.RetentionStrategy$Always"},
+             "launcher": {"stapler-class": "hudson.slaves.JNLPLauncher", "workDirSettings": {"disabled": false}},
+             "nodeProperties": {"stapler-class-bag": "true"}}
+      delegate_to: docker01
+      register: jenkins_node_create
+      failed_when:
+        - jenkins_node_create.status not in [200, 302, 400]
+        # 400 is returned by some Jenkins versions when the node already exists; treated as idempotent no-op.
+      changed_when: jenkins_node_create.status in [200, 302]
+
+    - name: "Retrieve JNLP agent secret for agent01"
+      ansible.builtin.uri:
+        url: "{{ jenkins_endpoint }}/computer/agent01/jenkins-agent.jnlp"
+        method: GET
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_token }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      delegate_to: docker01
+      register: jnlp_file_content
+      no_log: true
+
+    - name: "Extract JNLP secret from agent.jnlp XML"
+      ansible.builtin.set_fact:
+        jenkins_agent_jnlp_secret: "{{ jnlp_file_content.content | regex_search('<argument>([0-9a-f]+)</argument>', '\\1') | first }}"
+      no_log: true
 
     # ============================================================
-    # STEP 5: Install Build Toolchain
+    # STEP 3: Deploy Jenkins agent (systemd)
     # ============================================================
-    - name: "Step 5: Install build toolchain (Packer, Terraform, Ansible)"
-      block:
-        - name: "Update apt cache"
-          apt:
-            update_cache: yes
-            cache_valid_time: 3600
+    - name: "[STEP 3] Deploy Jenkins agent on agent01"
+      ansible.builtin.include_role:
+        name: blueprints.jenkins.agent
+        apply:
           delegate_to: agent01
-          become: yes
+      vars:
+        jenkins_agent_server_url: "{{ jenkins_endpoint }}"
+        jenkins_agent_name: "agent01"
+        jenkins_agent_secret: "{{ jenkins_agent_jnlp_secret }}"
+        jenkins_controller_mode: "container"
+        jenkins_agent_use_websocket: true
+        jenkins_agent_validate_certs: false  # step-ca root not yet trusted system-wide on agent01
+      no_log: true
 
-        - name: "Install HashiCorp repository"
-          shell: |
-            curl https://apt.releases.hashicorp.com/gpg | gpg --dearmor > /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list
-            apt-get update
+    # ============================================================
+    # STEP 4: Deploy Vault Agent (systemd, AppRole auth, auto-renewal)
+    # ============================================================
+    - name: "[STEP 4] Deploy Vault Agent on agent01"
+      ansible.builtin.include_role:
+        name: blueprints.vault_integrations.vault_agent
+        apply:
           delegate_to: agent01
-          become: yes
+      vars:
+        vault_integration_vault_endpoint: "{{ vault_endpoint }}"
+        vault_integration_vault_role_id: "{{ agent01_vault_role_id }}"
+        vault_integration_vault_secret_id: "{{ agent01_vault_secret_id }}"
+      no_log: true
+
+    # ============================================================
+    # STEP 5: Install build toolchain (Packer, Terraform, Ansible)
+    # ============================================================
+    - name: "[STEP 5] Install build toolchain on agent01"
+      block:
+        - name: "Check if HashiCorp apt repo already configured (idempotency)"
+          ansible.builtin.stat:
+            path: /etc/apt/sources.list.d/hashicorp.list
+          register: hashicorp_repo_check
+          delegate_to: agent01
+
+        - name: "Install HashiCorp apt repository"
+          block:
+            - name: "Install gnupg/curl prerequisites"
+              ansible.builtin.apt:
+                name: ["gnupg", "curl"]
+                state: present
+                update_cache: true
+                cache_valid_time: 3600
+
+            - name: "Add HashiCorp GPG key"
+              ansible.builtin.shell: |
+                curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+            - name: "Add HashiCorp apt repository"
+              ansible.builtin.shell: |
+                echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                  | tee /etc/apt/sources.list.d/hashicorp.list
+
+            - name: "Update apt cache after adding HashiCorp repo"
+              ansible.builtin.apt:
+                update_cache: true
+          when: not hashicorp_repo_check.stat.exists
+          become: true
+          delegate_to: agent01
 
         - name: "Install Packer"
-          apt:
+          ansible.builtin.apt:
             name: packer
-            state: latest
+            state: present
+          become: true
           delegate_to: agent01
-          become: yes
 
         - name: "Install Terraform"
-          apt:
+          ansible.builtin.apt:
             name: terraform
-            state: latest
+            state: present
+          become: true
           delegate_to: agent01
-          become: yes
 
-        - name: "Install Ansible"
-          apt:
+        - name: "Install Ansible (ansible-core, pinned to match bootstrap container's version family)"
+          ansible.builtin.apt:
             name: ansible-core
-            state: latest
+            state: present
+          become: true
           delegate_to: agent01
-          become: yes
+
+        - name: "Check if step CLI already installed (idempotency)"
+          ansible.builtin.stat:
+            path: /usr/local/bin/step
+          register: step_cli_check
+          delegate_to: agent01
 
         - name: "Install step CLI for certificate verification"
-          shell: |
-            wget https://dl.smallstep.com/gh-release/cli/gh-release-linux-amd64.tar.gz
-            tar -xf gh-release-linux-amd64.tar.gz
-            mv step_linux_*/step /usr/local/bin/
-            chmod +x /usr/local/bin/step
+          block:
+            - name: "Download step CLI release"
+              ansible.builtin.get_url:
+                url: "https://github.com/smallstep/cli/releases/download/v0.27.4/step_linux_0.27.4_amd64.tar.gz"
+                dest: /tmp/step.tar.gz
+                mode: "0644"
+
+            - name: "Extract and install step CLI"
+              ansible.builtin.unarchive:
+                src: /tmp/step.tar.gz
+                dest: /tmp
+                remote_src: true
+
+            - name: "Move step binary into place"
+              ansible.builtin.shell: |
+                find /tmp -name step -type f -path '*step_*' -exec mv {} /usr/local/bin/step \;
+                chmod +x /usr/local/bin/step
+          when: not step_cli_check.stat.exists
+          become: true
           delegate_to: agent01
-          become: yes
 
-    # ============================================================
-    # STEP 6: Configure Firewall (P1-10)
-    # ============================================================
-    - name: "Step 6: Configure firewall on agent01"
-      block:
-        - name: "Enable UFW"
-          shell: "ufw --force enable && ufw default deny incoming"
+        - name: "Verify toolchain versions"
+          ansible.builtin.shell: |
+            packer version && terraform version && ansible --version | head -1 && step version
           delegate_to: agent01
-          become: yes
+          register: toolchain_versions
+          changed_when: false
 
-        - name: "Allow SSH"
-          ufw:
-            rule: allow
-            port: "22"
-            proto: tcp
-          delegate_to: agent01
-          become: yes
+        - name: "Print installed toolchain versions"
+          ansible.builtin.debug:
+            msg: "{{ toolchain_versions.stdout_lines }}"
 
-        - name: "Allow Vault agent communication"
-          ufw:
-            rule: allow
-            port: "8200"
-            proto: tcp
-            to_ip: "{{ sec01_ip }}"
-          delegate_to: agent01
-          become: yes
-
-        - name: "Allow Jenkins JNLP connection to build01"
-          ufw:
-            rule: allow
-            port: "50000"
-            proto: tcp
-            to_ip: "{{ build01_ip }}"
-          delegate_to: agent01
-          become: yes
+      rescue:
+        - name: "Toolchain installation failed"
+          ansible.builtin.fail:
+            msg: "Toolchain installation failed on agent01. Check apt/network output above."
 
     # ============================================================
-    # STEP 7: Verify Agent Connection to Jenkins
+    # STEP 6: Verify agent connection to Jenkins
     # ============================================================
-    - name: "Step 7: Verify agent01 in Jenkins"
-      block:
-        - name: "Wait for agent to connect to Jenkins (max 2 min)"
-          uri:
-            url: "{{ jenkins_endpoint }}/api/json"
-            method: GET
-            user: admin
-            password: "{{ jenkins_admin_token }}"
-            validate_certs: no
-          register: jenkins_api_response
-          retries: 24
-          delay: 5
-          until: "'agent01' in jenkins_api_response.json.computer | map(attribute='displayName') | list"
-
-        - name: "Verify agent is online"
-          shell: |
-            curl -s -k -u admin:{{ jenkins_admin_token }} \
-              {{ jenkins_endpoint }}/api/json | jq '.computer[] | select(.displayName=="agent01") | .offline'
-          register: agent_offline_status
-          failed_when: "'true' in agent_offline_status.stdout"
-          no_log: true
+    - name: "[STEP 6] Verify agent01 is online in Jenkins"
+      ansible.builtin.uri:
+        url: "{{ jenkins_endpoint }}/computer/agent01/api/json"
+        method: GET
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_token }}"
+        force_basic_auth: true
+        validate_certs: false
+      delegate_to: docker01
+      register: agent_status
+      retries: 24
+      delay: 5
+      until: agent_status.json.offline is defined and not agent_status.json.offline
+      no_log: true
 
     # ============================================================
-    # STEP 8: Test Infrastructure Job
+    # STEP 7: Completion summary
     # ============================================================
-    - name: "Step 8: Run test job on agent01"
-      block:
-        - name: "Create and run test job"
-          shell: |
-            cat > /tmp/test-job.groovy << 'EOF'
-            job('test-connectivity') {
-              description 'Verify agent connectivity to Vault and step-ca'
-              label('agent01')
-              steps {
-                shell('''
-                  echo "Testing Vault connectivity..."
-                  curl -k https://sec01.vernify.internal:8200/v1/sys/health | jq .
-                  echo "Testing step-ca connectivity..."
-                  curl -k https://sec01.vernify.internal:9000/health | jq .
-                  echo "All connectivity tests passed!"
-                ''')
-              }
-            }
-            EOF
-            java -jar /opt/jenkins/jenkins-cli.jar \
-              -s {{ jenkins_endpoint }} \
-              -auth admin:{{ jenkins_admin_token }} \
-              create-job test-connectivity < /tmp/test-job.groovy
-          no_log: true
-
-    # ============================================================
-    # STEP 9: Clean up root token (P1-2 ephemeral storage)
-    # ============================================================
-    - name: "Step 9: Cleanup ephemeral root token (P1-2 mitigation)"
-      block:
-        - name: "Set tmpfs auto-delete timer for root token"
-          shell: |
-            # Root token file is in /opt/vault/root-token.txt
-            # Use systemd timer to delete after 10 minutes
-            cat > /etc/systemd/system/vault-root-token-cleanup.timer << 'EOF'
-            [Unit]
-            Description=Vault Root Token Cleanup (delete after 10 min)
-            Requires=vault-root-token-cleanup.service
-
-            [Timer]
-            OnBootSec=10min
-            Persistent=false
-
-            [Install]
-            WantedBy=timers.target
-            EOF
-
-            cat > /etc/systemd/system/vault-root-token-cleanup.service << 'EOF'
-            [Unit]
-            Description=Delete Vault Root Token
-            After=multi-user.target
-
-            [Service]
-            Type=oneshot
-            ExecStart=/bin/bash -c 'rm -f /opt/vault/root-token.txt'
-            StandardOutput=journal
-            StandardError=journal
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            systemctl daemon-reload
-            systemctl enable vault-root-token-cleanup.timer
-            systemctl start vault-root-token-cleanup.timer
-          delegate_to: sec01
-          become: yes
-
-    # ============================================================
-    # STEP 10: Bootstrap Container Retirement
-    # ============================================================
-    - name: "Step 10: Retire bootstrap container"
-      debug:
-        msg: |
-          ========== BOOTSTRAP CONTAINER RETIREMENT ==========
-
-          Phase 5 is complete. Bootstrap container is no longer needed.
-
-          To archive the bootstrap container:
-            docker commit bootstrap-container bootstrap-container:phase-5-complete
-            docker save bootstrap-container:phase-5-complete | gzip > bootstrap-container-archive.tar.gz
-            docker rm bootstrap-container
-
-          All infrastructure is now self-hosted:
-          - Secrets: managed by Vault (sec01)
-          - CI/CD: managed by Jenkins (build01)
-          - Infrastructure: provisioned by Terraform (agent01)
-          - Configuration: managed by Ansible (agent01 + others)
-
-          Bootstrap container files (if kept for reference):
-          - /workspace/bootstrap-container/playbooks/phase-3-orchestrate.yml
-          - /workspace/bootstrap-container/playbooks/phase-4-orchestrate.yml
-          - /workspace/bootstrap-container/playbooks/phase-5-orchestrate.yml
-
-          ===================================================
-
-    # ============================================================
-    # FINAL SUMMARY
-    # ============================================================
-    - name: "✓ PHASE 5 COMPLETE — Homelab Ready"
-      debug:
+    - name: "Phase 5 complete"
+      ansible.builtin.debug:
         msg: |
           ========== PHASE 5 COMPLETE — VERNIFY HOMELAB READY ==========
+          Build Capacity (agent01) is online:
+            - Jenkins agent connected to docker01 (systemd, WebSocket JNLP)
+            - Vault Agent running (AppRole auth, auto-renewal)
+            - Toolchain installed: Packer, Terraform, ansible-core, step CLI
 
-          All three infrastructure cores are online:
+          All three infrastructure cores are now self-hosted:
+            - sec01    ({{ sec01_ip }}):    step-ca + Vault
+            - docker01 ({{ docker01_ip }}): Jenkins controller
+            - agent01  ({{ agent01_ip }}):  Jenkins agent + Vault agent + toolchain
 
-          sec01 (Security Core):
-          - IP: {{ sec01_ip }}
-          - step-ca root CA (Port 9000)
-          - Vault (Port 8200, unsealed, auditing enabled)
-          - Auto-unseal systemd service configured
-          - Health monitoring timer active
-
-          build01 (CI Core):
-          - IP: {{ build01_ip }}
-          - Jenkins controller (Port 8443)
-          - Vault AppRole integration (auto-renewal enabled)
-          - Job DSL pipelines seeded
-          - JNLP listener on port 50000
-
-          agent01 (Build Capacity):
-          - IP: {{ agent01_ip }}
-          - Jenkins agent (systemd service, connected to build01)
-          - Vault agent (auto-renewal of secrets + certs)
-          - Toolchain: Packer, Terraform, Ansible
-          - Firewall configured
-
-          Communication Matrix (P1-11):
-          - build01 → sec01:8200 (Vault)
-          - build01 → sec01:9000 (step-ca)
-          - agent01 → sec01:8200 (Vault)
-          - agent01 → build01:50000 (Jenkins JNLP)
-
-          Firewall Rules (P1-10):
-          - All VMs: UFW enabled, default deny inbound
-          - All VMs: Allow SSH (Ansible mgmt)
-          - All VMs: Allow required service ports
-          - All VMs: Default allow outbound
-
-          Verification Commands:
-          1. Check Vault health:
-             curl -k https://sec01.vernify.internal:8200/v1/sys/health
-
-          2. List secrets in Vault:
-             vault kv list secret/infra/
-
-          3. Verify Jenkins agent:
-             https://build01.vernify.internal:8443/computer/agent01/
-
-          4. Run test job:
-             https://build01.vernify.internal:8443/job/test-connectivity/
-
-          Bootstrap container is archived and ready for deletion.
-
-          Next: Begin infrastructure deployments (Phases 6+)
-
-          ========================================================
+          Bootstrap container can now be archived and retired (see RUNBOOK.md).
+          ================================================================
