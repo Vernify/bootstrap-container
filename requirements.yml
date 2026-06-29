@@ -55,7 +55,7 @@ collections:
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
     type: git
-    version: 4fe64c1070d3490b3509b44e79688f4a45187eed  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: f3b40d7e20170b519e92a0ed3a05174198a54f1b  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
