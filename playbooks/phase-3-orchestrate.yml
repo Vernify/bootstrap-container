@@ -100,10 +100,18 @@
     # to resolve sec01's internal DNS name. Additive (lineinfile), not a
     # full overwrite, since this is the container's own /etc/hosts.
     - name: "[PRE] Add sec01 DNS entry to localhost's /etc/hosts (issue_certificate runs here)"
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        line: "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}"
-        create: false
+      # /etc/hosts inside a Docker container is bind-mounted -- lineinfile/copy
+      # use an atomic write-temp-then-rename pattern internally, which fails
+      # with "Device or resource busy" against a bind-mount target. Append
+      # directly instead, guarded by an idempotency check.
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! grep -qF "{{ sec01_ip }} sec01" /etc/hosts; then
+          echo "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}" >> /etc/hosts
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
 
     # blueprints.step_ca.container_server and blueprints.vault.container_server
     # both run community.docker.docker_container against sec01 -- the Docker
