@@ -266,6 +266,23 @@
           ansible.builtin.fail:
             msg: "blueprints.step_ca.container_server failed on sec01. Check role output above."
 
+    # vault_cacert_path ("/etc/ssl/certs/step-ca-root.crt") is referenced by
+    # every later vault CLI invocation (operator init, audit enable, the
+    # generated unseal-script.sh) but nothing ever wrote that file -- it
+    # never existed on sec01, causing "Error loading CA File: ... no such
+    # file or directory" wrapped inside vault operator init's own error
+    # output. step_ca_server_root_ca_cert is already set as a fact by Step 1
+    # above; write it out here, once, before anything tries to use it.
+    - name: "Write step-ca root cert to {{ vault_cacert_path }} on sec01"
+      ansible.builtin.copy:
+        content: "{{ step_ca_server_root_ca_cert }}"
+        dest: "{{ vault_cacert_path }}"
+        mode: "0644"
+        owner: root
+        group: root
+      become: true
+      delegate_to: sec01
+
     # ============================================================
     # STEP 2: Issue TLS certificate for Vault
     # ============================================================
