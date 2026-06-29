@@ -180,16 +180,6 @@
             state: present
             break_system_packages: true
 
-    # community.hashi_vault.vault_write (Step 6, secret seeding) runs
-    # delegated to sec01 and needs the hvac Python library there, same
-    # requirement class as the Docker SDK above for docker_container.
-    - name: "[PRE] Install hvac Python library on sec01 (required by community.hashi_vault.vault_write)"
-      ansible.builtin.pip:
-        name: hvac
-        state: present
-        break_system_packages: true
-      become: true
-      delegate_to: sec01
 
     # blueprints.vault.init_and_unseal needs the vault CLI on sec01 itself,
     # not just the bootstrap container: its generated unseal-script.sh runs
@@ -504,105 +494,126 @@
           no_log: true
           changed_when: true
 
+        # community.hashi_vault.vault_write crashed here with an unhandled
+        # exception (bypassing failed_when entirely -- no_log hid the
+        # traceback, and isolated reproduction with a fake value succeeded
+        # fine, so the real cert/token combination was triggering something
+        # module-internal that could not be diagnosed without exposing the
+        # token). Switched to ansible.builtin.uri writing directly to
+        # Vault's KV v2 HTTP API, matching a proven pattern already used
+        # elsewhere for this exact purpose -- no extra Python library
+        # required on the delegated host at all.
         - name: "Seed kv/platform/step-ca/root-ca-cert"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/step-ca/root-ca-cert"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/step-ca/root-ca-cert"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/root_ca.crt')) }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "never"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/platform/step-ca/provisioner-password"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/step-ca/provisioner-password"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/step-ca/provisioner-password"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ step_ca_provisioner_password }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "90d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/platform/vault/tls-cert"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/vault/tls-cert"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/vault/tls-cert"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ vault_tls_cert_pem }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "30d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/platform/vault/tls-key"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/vault/tls-key"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/vault/tls-key"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ vault_tls_key_pem }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "30d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/saas/proxmox/api-token"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/saas/proxmox/api-token"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/saas/proxmox/api-token"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ proxmox_token }}"
                 owner: "infrastructure-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "90d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/saas/tfc/team-token"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/saas/tfc/team-token"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/saas/tfc/team-token"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
                 value: "{{ terraform_cloud_token }}"
                 owner: "infrastructure-team"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "90d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
@@ -629,118 +640,137 @@
           changed_when: true
 
         # --- Jenkins AppRole (consumed by Phase 4 / kv/platform/jenkins/approle) ---
+        # Switched from community.hashi_vault to ansible.builtin.uri for the
+        # same reason as Step 6 above (unexplained module-level crash with
+        # no_log hiding the traceback). uri's parsed JSON body lands under
+        # .json -- auth/approle reads return {"data": {"role_id": "..."}}
+        # directly (single nesting, unlike KV v2's data.data).
         - name: "Create Jenkins AppRole"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/jenkins"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/jenkins"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               token_ttl: "1h"
               token_max_ttl: "4h"
               secret_id_ttl: "86400"
               bind_secret_id: true
               token_policies: ["default", "jenkins"]
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Read Jenkins role_id"
-          community.hashi_vault.vault_read:
-            url: "{{ vault_endpoint }}"
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/jenkins/role-id"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
             validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/jenkins/role-id"
+            status_code: [200]
           register: jenkins_role_id_result
           delegate_to: sec01
           no_log: true
 
         - name: "Generate Jenkins secret_id"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/jenkins/secret-id"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body: {}
             validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/jenkins/secret-id"
-            data: {}
+            status_code: [200]
           register: jenkins_secret_id_result
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/platform/jenkins/approle"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/jenkins/approle"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/jenkins/approle"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
-                role_id: "{{ jenkins_role_id_result.data.data.role_id }}"
-                secret_id: "{{ jenkins_secret_id_result.data.data.secret_id }}"
+                role_id: "{{ jenkins_role_id_result.json.data.role_id }}"
+                secret_id: "{{ jenkins_secret_id_result.json.data.secret_id }}"
                 owner: "jenkins-ci"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "30d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         # --- Agent01 AppRole (consumed by Phase 5 / kv/platform/agent01/approle) ---
         - name: "Create agent01 AppRole"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/agent01"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/agent01"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               token_ttl: "1h"
               token_max_ttl: "4h"
               secret_id_ttl: "86400"
               bind_secret_id: true
               token_policies: ["default", "agents"]
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
         - name: "Read agent01 role_id"
-          community.hashi_vault.vault_read:
-            url: "{{ vault_endpoint }}"
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/agent01/role-id"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
             validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/agent01/role-id"
+            status_code: [200]
           register: agent01_role_id_result
           delegate_to: sec01
           no_log: true
 
         - name: "Generate agent01 secret_id"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/auth/approle/role/agent01/secret-id"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body: {}
             validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "auth/approle/role/agent01/secret-id"
-            data: {}
+            status_code: [200]
           register: agent01_secret_id_result
           delegate_to: sec01
           no_log: true
 
         - name: "Seed kv/platform/agent01/approle"
-          community.hashi_vault.vault_write:
-            url: "{{ vault_endpoint }}"
-            validate_certs: false
-            auth_method: token
-            token: "{{ vault_root_token }}"
-            path: "{{ kv_mount }}/data/platform/agent01/approle"
-            data:
+          ansible.builtin.uri:
+            url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/agent01/approle"
+            method: POST
+            headers:
+              X-Vault-Token: "{{ vault_root_token }}"
+            body_format: json
+            body:
               data:
-                role_id: "{{ agent01_role_id_result.data.data.role_id }}"
-                secret_id: "{{ agent01_secret_id_result.data.data.secret_id }}"
+                role_id: "{{ agent01_role_id_result.json.data.role_id }}"
+                secret_id: "{{ agent01_secret_id_result.json.data.secret_id }}"
                 owner: "build-agents"
                 usage: "machine"
                 managed_by: "automation"
                 rotation_period: "30d"
+            validate_certs: false
+            status_code: [200, 204]
           delegate_to: sec01
           no_log: true
 
