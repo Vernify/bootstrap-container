@@ -180,6 +180,54 @@
             state: present
             break_system_packages: true
 
+    # blueprints.vault.init_and_unseal needs the vault CLI on sec01 itself,
+    # not just the bootstrap container: its generated unseal-script.sh runs
+    # autonomously via a systemd service on sec01 (auto-unseal on Vault
+    # restart, per the design's LADR-008), with no bootstrap-container
+    # involvement at that point. This differs from step-ca's issue_certificate
+    # (a one-shot, Ansible-driven operation correctly delegated to localhost
+    # where step CLI lives) -- Vault's unseal path is designed to keep working
+    # after the bootstrap container is retired, so vault CLI must be
+    # permanently installed on sec01, not borrowed from the control node.
+    - name: "[PRE] Check if HashiCorp apt repo already configured on sec01 (idempotency)"
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/hashicorp.list
+      register: sec01_hashicorp_repo_check
+      become: true
+      delegate_to: sec01
+
+    - name: "[PRE] Install HashiCorp apt repository on sec01"
+      become: true
+      delegate_to: sec01
+      when: not sec01_hashicorp_repo_check.stat.exists
+      block:
+        - name: "Install gnupg/curl prerequisites"
+          ansible.builtin.apt:
+            name: ["gnupg", "curl"]
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: "Add HashiCorp GPG key"
+          ansible.builtin.shell: |
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+        - name: "Add HashiCorp apt repository"
+          ansible.builtin.shell: |
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | tee /etc/apt/sources.list.d/hashicorp.list
+
+        - name: "Update apt cache after adding HashiCorp repo"
+          ansible.builtin.apt:
+            update_cache: true
+
+    - name: "[PRE] Install vault CLI on sec01"
+      ansible.builtin.apt:
+        name: vault
+        state: present
+      become: true
+      delegate_to: sec01
+
   tasks:
     # ============================================================
     # STEP 1: Deploy step-ca container
