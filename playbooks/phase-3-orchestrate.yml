@@ -180,6 +180,17 @@
             state: present
             break_system_packages: true
 
+    # community.hashi_vault.vault_write (Step 6, secret seeding) runs
+    # delegated to sec01 and needs the hvac Python library there, same
+    # requirement class as the Docker SDK above for docker_container.
+    - name: "[PRE] Install hvac Python library on sec01 (required by community.hashi_vault.vault_write)"
+      ansible.builtin.pip:
+        name: hvac
+        state: present
+        break_system_packages: true
+      become: true
+      delegate_to: sec01
+
     # blueprints.vault.init_and_unseal needs the vault CLI on sec01 itself,
     # not just the bootstrap container: its generated unseal-script.sh runs
     # autonomously via a systemd service on sec01 (auto-unseal on Vault
