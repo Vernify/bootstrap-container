@@ -228,6 +228,26 @@
       become: true
       delegate_to: sec01
 
+    # The HashiCorp apt package ships a native vault.service systemd unit
+    # alongside the CLI binary, and Debian's default postinst policy
+    # auto-enables and starts it immediately. We only want the CLI; Vault
+    # itself runs as a Docker container (blueprints.vault.container_server).
+    # Left alone, this native unit crash-loops indefinitely (no
+    # /etc/vault.d/vault.hcl exists) while repeatedly trying to bind the
+    # same port 8200 our container also binds, intermittently starving the
+    # container's own listener of the port during each restart attempt --
+    # this surfaced as a mysterious "Vault API did not become ready" timeout
+    # in the auto-unseal script despite the container itself being healthy.
+    - name: "[PRE] Disable and stop the native vault.service (we run Vault via Docker, not natively)"
+      ansible.builtin.systemd:
+        name: vault.service
+        state: stopped
+        enabled: false
+        masked: true
+      become: true
+      delegate_to: sec01
+      failed_when: false
+
   tasks:
     # ============================================================
     # STEP 1: Deploy step-ca container
