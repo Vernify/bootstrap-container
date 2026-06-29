@@ -22,7 +22,16 @@ ARG PACKER_VERSION=1.11.2
 ARG TERRAFORM_VERSION=1.15.6
 ARG VAULT_VERSION=1.17.5
 ARG STEP_VERSION=0.27.4
-ARG ARCH=amd64
+# TARGETARCH is populated automatically by BuildKit to match the actual
+# build platform (amd64/arm64) -- it is NOT something to override manually.
+# The previous hardcoded "ARG ARCH=amd64" silently downloaded amd64 binaries
+# on arm64 hosts (e.g. Apple Silicon), running every tool under QEMU
+# emulation. This is not just slow: Go's amd64-optimized AES-GCM assembly
+# has documented correctness bugs under arm64 emulation, which surfaced as
+# a deterministic "tls: bad record MAC" in the step CLI's TLS client
+# specifically (other tools may have been silently affected without
+# producing as obvious a symptom).
+ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -54,21 +63,21 @@ RUN python3 -m venv "${VIRTUAL_ENV}" \
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # ── packer ──────────────────────────────────────────────────────────────────
-RUN curl -fsSL "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_${ARCH}.zip" \
+RUN curl -fsSL "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_${TARGETARCH}.zip" \
         -o /tmp/packer.zip \
     && unzip -o /tmp/packer.zip -d /usr/local/bin/ \
     && rm /tmp/packer.zip \
     && packer version
 
 # ── terraform ───────────────────────────────────────────────────────────────
-RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${ARCH}.zip" \
+RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" \
         -o /tmp/terraform.zip \
     && unzip -o /tmp/terraform.zip -d /usr/local/bin/ \
     && rm /tmp/terraform.zip \
     && terraform version
 
 # ── vault CLI ───────────────────────────────────────────────────────────────
-RUN curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${ARCH}.zip" \
+RUN curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_${TARGETARCH}.zip" \
         -o /tmp/vault.zip \
     && unzip -o /tmp/vault.zip -d /usr/local/bin/ \
     && rm /tmp/vault.zip \
@@ -76,7 +85,7 @@ RUN curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VA
 
 # ── step CLI ────────────────────────────────────────────────────────────────
 RUN mkdir -p /tmp/step-extract \
-    && curl -fsSL "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/step_linux_${STEP_VERSION}_${ARCH}.tar.gz" \
+    && curl -fsSL "https://github.com/smallstep/cli/releases/download/v${STEP_VERSION}/step_linux_${STEP_VERSION}_${TARGETARCH}.tar.gz" \
         -o /tmp/step.tar.gz \
     && tar -xzf /tmp/step.tar.gz -C /tmp/step-extract/ \
     && find /tmp/step-extract -name "step" -type f -exec mv {} /usr/local/bin/ \; \
