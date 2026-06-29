@@ -50,7 +50,7 @@ collections:
   - name: blueprints.step_ca
     source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
-    version: 4ed8681985c2b8318ba52e0abc954634a831a1cb  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 2e53e26ba2beef0f8f25cd354a1bd0d33589301c  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
