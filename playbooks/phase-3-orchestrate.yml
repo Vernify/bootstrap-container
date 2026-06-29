@@ -427,6 +427,28 @@
               Vault unseal did not complete. Check /opt/vault/unseal.sh on sec01
               and confirm the unseal keys file at /opt/vault/unseal-keys.json is intact.
 
+    # blueprints.vault.init_and_unseal previously ran this same task itself
+    # as part of Step 4, which executes strictly before this Step 5 -- at
+    # that point Vault is still genuinely sealed every time, so it always
+    # failed with "Vault is sealed" after exhausting its retries. Moved
+    # here, after Step 5 has confirmed Vault is actually unsealed.
+    - name: "Enable Vault audit logging (file backend)"
+      environment:
+        VAULT_ADDR: "{{ vault_endpoint }}"
+        VAULT_CACERT: "/etc/ssl/certs/step-ca-root.crt"
+        VAULT_TOKEN: "{{ vault_root_token }}"
+      ansible.builtin.shell: |
+        vault audit enable file file_path=/var/log/vault/audit.log
+      register: audit_enable_result
+      delegate_to: sec01
+      failed_when:
+        - audit_enable_result.rc != 0
+        - "'path is already in use' not in audit_enable_result.stderr"
+      changed_when: "'Success' in audit_enable_result.stdout"
+      no_log: true
+      retries: 3
+      delay: 2
+
     # ============================================================
     # STEP 6: Seed Vault KV v2 with canonical secret paths
     # (VAULT_SECRET_PATH_MODEL.md — orchestration-layer per LADR-003)
