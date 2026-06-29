@@ -117,6 +117,17 @@ else
   _warn "Set it before running Ansible against provisioned VMs."
 fi
 
+# Derive the .pub file alongside the private key. bootstrap-phase-3-5.sh
+# reads "${SSH_KEY_FILE}.pub" to pass -var="ssh_public_keys=[...]" to each
+# terraform-<host>-deploy apply; without this, that cat fails silently and
+# Terraform receives an EMPTY public key, which overrides (takes precedence
+# over) the real key in *.auto.tfvars and locks SSH out of the new VM/LXC.
+if [[ -f "${SSH_KEY_FILE:-}" ]]; then
+  ssh-keygen -y -f "${SSH_KEY_FILE}" > "${SSH_KEY_FILE}.pub" 2>/dev/null \
+    && chmod 644 "${SSH_KEY_FILE}.pub" \
+    || _warn "Could not derive ${SSH_KEY_FILE}.pub from the private key — check key format."
+fi
+
 # Configure ssh-agent if we have a key
 if [[ -f "${SSH_KEY_FILE:-}" ]]; then
   eval "$(ssh-agent -s)" > /dev/null
