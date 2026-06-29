@@ -212,6 +212,7 @@
         name: blueprints.jenkins.agent
         apply:
           delegate_to: agent01
+          become: true
       vars:
         jenkins_agent_server_url: "{{ jenkins_endpoint }}"
         jenkins_agent_name: "agent01"
@@ -229,6 +230,7 @@
         name: blueprints.vault_integrations.vault_agent
         apply:
           delegate_to: agent01
+          become: true
       vars:
         vault_integration_vault_endpoint: "{{ vault_endpoint }}"
         vault_integration_vault_role_id: "{{ agent01_vault_role_id }}"

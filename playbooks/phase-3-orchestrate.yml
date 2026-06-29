@@ -111,6 +111,7 @@
             name: blueprints.step_ca.container_server
             apply:
               delegate_to: sec01
+              become: true
           vars:
             step_ca_server_image: "smallstep/step-ca:0.27.4"
             step_ca_server_provisioner_password: "{{ step_ca_provisioner_password }}"
@@ -138,6 +139,7 @@
         name: blueprints.step_ca.issue_certificate
         apply:
           delegate_to: sec01
+          become: true
       vars:
         step_ca_issue_ca_url: "{{ step_ca_endpoint }}"
         step_ca_issue_ca_fingerprint: "{{ step_ca_server_ca_fingerprint | default('') }}"
@@ -173,6 +175,7 @@
             name: blueprints.vault.container_server
             apply:
               delegate_to: sec01
+              become: true
           vars:
             vault_server_image: "hashicorp/vault:1.17.5"
             vault_server_https_port: 8200
@@ -205,6 +208,7 @@
         name: blueprints.vault.init_and_unseal
         apply:
           delegate_to: sec01
+          become: true
       vars:
         vault_api_endpoint: "{{ vault_endpoint }}"
         vault_cacert_path: "{{ vault_cacert_path }}"

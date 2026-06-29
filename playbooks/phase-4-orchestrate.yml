@@ -142,6 +142,7 @@
         name: blueprints.step_ca.issue_certificate
         apply:
           delegate_to: docker01
+          become: true
       vars:
         step_ca_issue_ca_url: "{{ step_ca_endpoint }}"
         step_ca_issue_ca_fingerprint: "{{ lookup('env', 'STEP_CA_ROOT_FINGERPRINT', default='') }}"
@@ -199,6 +200,7 @@
             name: blueprints.jenkins.container_server
             apply:
               delegate_to: docker01
+              become: true
           vars:
             jenkins_server_image: "jenkins/jenkins:lts-jdk21"
             jenkins_server_https_port: 8443
@@ -235,6 +237,7 @@
         name: blueprints.jenkins_integrations.vault_auth
         apply:
           delegate_to: docker01
+          become: true
       vars:
         jenkins_integration_vault_endpoint: "{{ vault_endpoint }}"
         jenkins_integration_vault_role_id: "{{ jenkins_vault_role_id }}"
