@@ -49,7 +49,7 @@
 
     # ----- Vault / step-ca endpoints -----
     vault_endpoint: "https://sec01.{{ vernify_internal_domain }}:8200"
-    step_ca_endpoint: "https://sec01.{{ vernify_internal_domain }}:9000"
+    step_ca_endpoint: "https://sec01.{{ vernify_internal_domain }}:443"
     vault_cacert_path: "/etc/ssl/certs/step-ca-root.crt"
 
     # ----- Canonical Vault secret paths (VAULT_SECRET_PATH_MODEL.md) -----

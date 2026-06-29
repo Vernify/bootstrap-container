@@ -50,7 +50,7 @@
     agent01_ip: "192.168.22.53"
 
     vault_endpoint: "https://sec01.{{ vernify_internal_domain }}:8200"
-    step_ca_endpoint: "https://sec01.{{ vernify_internal_domain }}:9000"
+    step_ca_endpoint: "https://sec01.{{ vernify_internal_domain }}:443"
     vault_cacert_path: "/etc/ssl/certs/step-ca-root.crt"
     jenkins_endpoint: "https://docker01.{{ vernify_internal_domain }}:8443"
     kv_mount: "kv"
