@@ -474,7 +474,13 @@
       delegate_to: sec01
       failed_when:
         - audit_enable_result.rc != 0
-        - "'path is already in use' not in audit_enable_result.stderr"
+        # Vault's real error text is "path already in use" (no "is") --
+        # confirmed live: "Error enabling audit device: ... Code: 400.
+        # Errors: * path already in use: invalid configuration". The
+        # previous "is already in use" substring never matched, so this
+        # check failed outright on every idempotent re-run after the
+        # first successful enable.
+        - "'path already in use' not in audit_enable_result.stderr"
       changed_when: "'Success' in audit_enable_result.stdout"
       no_log: true
       retries: 3
@@ -493,7 +499,7 @@
             VAULT_TOKEN: "{{ vault_root_token }}"
             VAULT_SKIP_VERIFY: "true"
           ansible.builtin.shell: |
-            vault secrets enable -path={{ kv_mount }} kv-v2 2>&1 | grep -v "path is already in use" || true
+            vault secrets enable -path={{ kv_mount }} kv-v2 2>&1 | grep -v "path already in use" || true
           delegate_to: sec01
           no_log: true
           changed_when: true
@@ -617,7 +623,7 @@
             VAULT_TOKEN: "{{ vault_root_token }}"
             VAULT_SKIP_VERIFY: "true"
           ansible.builtin.shell: |
-            vault auth enable approle 2>&1 | grep -v "path is already in use" || true
+            vault auth enable approle 2>&1 | grep -v "path already in use" || true
           delegate_to: sec01
           no_log: true
           changed_when: true
