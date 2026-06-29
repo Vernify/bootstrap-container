@@ -88,6 +88,10 @@ collections:
   - name: community.general
     version: ">=3.0.0,<4.0.0"
 
-  # Vault API client and lookup plugins (required for vault_auth/vault_integrations roles)
+  # Vault API client and lookup plugins (required for vault_auth/vault_integrations roles).
+  # 1.x only ships vault_read -- no vault_write/vault_kv2_write at all -- which
+  # phase-3-orchestrate.yml's secret-seeding step needs. Bumped to the latest
+  # available major (7.x) after the v1 upper bound was found blocking a live
+  # Phase 3 run.
   - name: community.hashi_vault
-    version: ">=1.0.0,<2.0.0"
+    version: ">=7.0.0,<8.0.0"
