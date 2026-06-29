@@ -501,15 +501,25 @@
           no_log: true
           changed_when: true
 
-        # community.hashi_vault.vault_write crashed here with an unhandled
-        # exception (bypassing failed_when entirely -- no_log hid the
-        # traceback, and isolated reproduction with a fake value succeeded
-        # fine, so the real cert/token combination was triggering something
-        # module-internal that could not be diagnosed without exposing the
-        # token). Switched to ansible.builtin.uri writing directly to
-        # Vault's KV v2 HTTP API, matching a proven pattern already used
-        # elsewhere for this exact purpose -- no extra Python library
-        # required on the delegated host at all.
+        # Real root cause of every secret-seeding failure tonight, found by
+        # temporarily removing no_log (user-authorized) to see the actual
+        # exception, which had bypassed failed_when entirely every time:
+        # "The 'file' lookup had an issue accessing the file
+        # '/var/lib/step-ca/root_ca.crt'. file not found". Jinja2 evaluates
+        # filter ARGUMENTS eagerly, before the filter itself runs -- so
+        # default(lookup('file', ...)) always evaluates that lookup, even
+        # when step_ca_server_root_ca_cert is already defined and the
+        # lookup's result would never be used. lookup('file', ...) always
+        # runs on the control node regardless of delegate_to, and that path
+        # only ever exists on sec01 -- so the lookup failed every single
+        # time, unconditionally, masking as an unexplained module crash.
+        # step_ca_server_root_ca_cert is always set by Step 1 above before
+        # this point runs; the fallback was both unreachable in practice
+        # and actively broken. Switched to ansible.builtin.uri writing
+        # directly to Vault's KV v2 HTTP API along the way (a real,
+        # independently-justified improvement -- no extra Python library
+        # required on the delegated host -- even though it was not itself
+        # the fix for this specific failure).
         - name: "Seed kv/platform/step-ca/root-ca-cert"
           ansible.builtin.uri:
             url: "{{ vault_endpoint }}/v1/{{ kv_mount }}/data/platform/step-ca/root-ca-cert"
@@ -519,14 +529,7 @@
             body_format: json
             body:
               data:
-                # regex_replace('', '') strips Ansible's AnsibleUnsafeText wrapper (the
-                # value's type, confirmed via debug -- a value that went
-                # through slurp | b64decode | set_fact inside a delegated
-                # include_role gets this wrapper, marking it "unsafe" to
-                # prevent Jinja2 re-templating). The wrapped type was the
-                # one structural difference from every isolated
-                # reproduction, which all used plainer value paths.
-                value: "{{ (step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/root_ca.crt'))) | regex_replace('', '') }}"
+                value: "{{ step_ca_server_root_ca_cert }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
