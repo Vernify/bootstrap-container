@@ -306,6 +306,14 @@
           - "vault"
           - "vault.sec01"
           - "vault.sec01.{{ vernify_internal_domain }}"
+          # vault_endpoint (VAULT_ADDR for every vault CLI call across all
+          # three phases) uses the bare sec01 hostname, not vault.sec01 --
+          # without these SANs, vault operator init failed with "tls:
+          # failed to verify certificate: x509: certificate is valid for
+          # vault, vault.sec01, vault.sec01.vernify.internal, not
+          # sec01.vernify.internal".
+          - "sec01"
+          - "sec01.{{ vernify_internal_domain }}"
           - "{{ sec01_ip }}"
         step_ca_issue_certificate_validity_days: 365
       register: vault_cert_issue_result
