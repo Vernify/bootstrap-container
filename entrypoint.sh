@@ -127,8 +127,15 @@ fi
 # ---------------------------------------------------------------------------
 export VAULT_ADDR="${VAULT_ADDR:-}"           # populated in Phase 3 once Vault is up
 export VAULT_TOKEN="${VAULT_TOKEN:-}"
-# TF_TOKEN_app_terraform_io is the env var that Terraform / TFC recognises.
+# TF_TOKEN_app_terraform_io is the env var that Terraform / TFC recognises
+# for the cloud {} backend (used by the per-host terraform-<host>-deploy repos).
+# shellcheck disable=SC2153 # intentional: TFC_TOKEN is the source value for both this and TFE_TOKEN below.
 export TF_TOKEN_app_terraform_io="${TFC_TOKEN}"
+# TFE_TOKEN is what the `tfe` provider reads (used by terraform-workspaces-deploy,
+# which is invoked directly via `terraform -chdir=...` inside this container by
+# bootstrap-phase-3-5.sh — not through that repo's own docker-compose wrapper,
+# so this container must provide the same TFC_TOKEN -> TFE_TOKEN mapping itself).
+export TFE_TOKEN="${TFC_TOKEN}"
 
 # ---------------------------------------------------------------------------
 # Validate the toolchain is intact
