@@ -101,6 +101,17 @@
       become: true
       delegate_to: docker01
 
+    # blueprints.step_ca.issue_certificate runs on localhost (see that
+    # include_role's apply: block below) and requests against sec01 (where
+    # step-ca actually runs, not docker01) -- localhost needs to resolve
+    # sec01's internal DNS name. Additive (lineinfile), not a full
+    # overwrite, since this is the container's own /etc/hosts.
+    - name: "[PRE] Add sec01 DNS entry to localhost's /etc/hosts (issue_certificate runs here)"
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}"
+        create: false
+
     # blueprints.jenkins.container_server runs community.docker.docker_container
     # against docker01 -- the Docker engine itself is not part of the Packer
     # template and must be installed here before that role runs.
@@ -207,8 +218,13 @@
       ansible.builtin.include_role:
         name: blueprints.step_ca.issue_certificate
         apply:
-          delegate_to: docker01
-          become: true
+          # localhost, not docker01: the step CLI is baked into the
+          # bootstrap-container image, not installed on docker01. Cert
+          # issuance is a client-side operation against step-ca's
+          # network-reachable HTTPS API on sec01; the role returns
+          # cert/key as facts (content, not file paths), so where the
+          # command runs doesn't matter downstream.
+          delegate_to: localhost
       vars:
         step_ca_issue_ca_url: "{{ step_ca_endpoint }}"
         step_ca_issue_ca_fingerprint: "{{ lookup('env', 'STEP_CA_ROOT_FINGERPRINT', default='') }}"
