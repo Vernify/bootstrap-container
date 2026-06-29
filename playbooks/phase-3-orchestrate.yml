@@ -304,7 +304,12 @@
           become: true
       vars:
         vault_api_endpoint: "{{ vault_endpoint }}"
-        vault_cacert_path: "{{ vault_cacert_path }}"
+        # Literal, not "{{ vault_cacert_path }}": include_role's vars: block
+        # creates a new scope where same-named keys can see each other,
+        # including themselves -- referencing the play-level var by its own
+        # name here caused 'recursive loop detected in template string'.
+        # Same value as the play-level vault_cacert_path above.
+        vault_cacert_path: "/etc/ssl/certs/step-ca-root.crt"
         vault_backup_verification_enabled: true
       no_log: false  # role itself sets no_log on the sensitive sub-tasks
 
