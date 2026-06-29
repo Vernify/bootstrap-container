@@ -28,7 +28,7 @@
 #   As of June 2026:
 #     - community.docker: >=3.10.0,<4.0.0 (container lifecycle management)
 #     - community.general: >=3.0.0,<4.0.0 (general utilities)
-#     - community.hashi_vault: >=1.0.0,<2.0.0 (Vault API integration)
+#     - community.hashi_vault: >=7.0.0,<8.0.0 (Vault API integration; 1.x has no vault_write)
 #
 # To update a community collection version:
 #   1. Edit the version constraint (e.g., ">=X.Y.Z,<(X+1).0.0")
@@ -50,12 +50,12 @@ collections:
   - name: blueprints.step_ca
     source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
-    version: bd5070da812cecc1e34c5d9eec738dffadcad3cc  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: a04ecbe13194fcb3066528d6a2e656274b0bb938  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
     type: git
-    version: 5aaf174eae3495068ccbce6dfcb8e40ea02dd0eb  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 74830a1f73e4d758fdc35e82beb4b5b6cff97e2c  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
@@ -65,7 +65,7 @@ collections:
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
     type: git
-    version: 350eef663307bfc90fe8234b1d877c7f363fa4cf  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 4040ff61e14593164ea4a58b25dadaa938e9e354  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
