@@ -14,6 +14,9 @@
 #   - the top-level operator gate before Vault unseal-key generation
 #
 # Phases:
+#   Pre-phase: terraform-workspaces-deploy creates the sec01/docker01/agent01
+#              TFC workspaces so the per-host repos below have a TFC backend
+#              to initialize against (runs once, before Phase 3).
 #   Phase 3: sec01  (step-ca + Vault) standup + secret seeding
 #   Phase 4: docker01 (Jenkins, deployed from terraform-build01-deploy)
 #   Phase 5: agent01 (LXC: Jenkins agent + Vault agent + toolchain)
@@ -207,7 +210,7 @@ validate_environment() {
   done
   log_success "All dependencies available"
 
-  for repo in terraform-sec01-deploy terraform-build01-deploy terraform-agent01-deploy; do
+  for repo in terraform-workspaces-deploy terraform-sec01-deploy terraform-build01-deploy terraform-agent01-deploy; do
     if [[ ! -d "${WORKSPACE}/${repo}" ]]; then
       error_exit "Terraform repo not found: ${WORKSPACE}/${repo}"
     fi
@@ -247,6 +250,29 @@ tf_output() {
   local repo_dir="$1"
   local output_name="$2"
   terraform -chdir="${repo_dir}" output -raw "${output_name}"
+}
+
+##############################################################################
+# PRE-PHASE: TFC workspace lifecycle (sec01, docker01, agent01)
+##############################################################################
+
+# Creates the per-host TFC workspaces (sec01, docker01, agent01) via
+# terraform-workspaces-deploy, BEFORE any per-host repo tries to use one of
+# those workspaces as its own `cloud {}` backend (see terraform-sec01-deploy,
+# terraform-build01-deploy, terraform-agent01-deploy main.tf). This breaks the
+# "a workspace needs a workspace to create it" cycle: this apply runs with
+# local state (or from within the pre-created `bootstrap` TFC workspace), and
+# only afterwards do the per-host applies initialize against a TFC backend
+# that's actually there.
+ensure_tfc_workspaces() {
+  log_info "=== PRE-PHASE: Ensure TFC workspaces (sec01, docker01, agent01) ==="
+  local repo="${WORKSPACE}/terraform-workspaces-deploy"
+
+  terraform -chdir="${repo}" init -input=false
+  terraform -chdir="${repo}" apply -auto-approve \
+    || error_exit "Terraform apply failed for terraform-workspaces-deploy"
+
+  log_success "TFC workspaces ensured (sec01, docker01, agent01)"
 }
 
 ##############################################################################
@@ -392,6 +418,8 @@ main() {
 
   parse_args "$@"
   validate_environment
+
+  run_step ensure_tfc_workspaces ensure_tfc_workspaces
 
   case "${ONLY_PHASE}" in
     3) run_phase3 ;;
