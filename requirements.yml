@@ -50,12 +50,12 @@ collections:
   - name: blueprints.step_ca
     source: https://github.com/iac-foundry/ansible-collection-step-ca
     type: git
-    version: a04ecbe13194fcb3066528d6a2e656274b0bb938  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 976c1e586f625c23c0807f054cb1b8ad3825f657  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault
     source: https://github.com/iac-foundry/ansible-collection-vault
     type: git
-    version: 74830a1f73e4d758fdc35e82beb4b5b6cff97e2c  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: beba9ae0434ba6e11b784c1c29a112e3f80efb9b  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
@@ -65,7 +65,7 @@ collections:
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
     type: git
-    version: 4040ff61e14593164ea4a58b25dadaa938e9e354  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 6f959dced763542c37117c381faa6f9f2bcdd97e  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
