@@ -49,7 +49,8 @@ RUN python3 -m venv "${VIRTUAL_ENV}" \
     && "${VIRTUAL_ENV}/bin/pip" install --no-cache-dir \
         ansible-core==2.17.* \
         hvac \
-        netaddr
+        netaddr \
+        passlib
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # ── packer ──────────────────────────────────────────────────────────────────
