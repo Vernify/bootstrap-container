@@ -101,6 +101,67 @@
       become: true
       delegate_to: docker01
 
+    # blueprints.jenkins.container_server runs community.docker.docker_container
+    # against docker01 -- the Docker engine itself is not part of the Packer
+    # template and must be installed here before that role runs.
+    - name: "[PRE] Check if Docker is already installed on docker01 (idempotency)"
+      ansible.builtin.stat:
+        path: /usr/bin/docker
+      register: docker01_docker_check
+      become: true
+      delegate_to: docker01
+
+    - name: "[PRE] Install Docker Engine on docker01"
+      become: true
+      delegate_to: docker01
+      when: not docker01_docker_check.stat.exists
+      block:
+        - name: "Install prerequisites"
+          ansible.builtin.apt:
+            name: ["ca-certificates", "curl", "python3-pip"]
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: "Create keyrings directory"
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: "Download Docker's official GPG key"
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+
+        - name: "Add Docker apt repository"
+          ansible.builtin.apt_repository:
+            repo: >-
+              deb [arch={{ ansible_architecture | regex_replace('x86_64', 'amd64') | regex_replace('aarch64', 'arm64') }}
+              signed-by=/etc/apt/keyrings/docker.asc]
+              https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+            state: present
+            filename: docker
+
+        - name: "Install Docker Engine"
+          ansible.builtin.apt:
+            name: ["docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"]
+            state: present
+            update_cache: true
+
+        - name: "Ensure Docker service is enabled and running"
+          ansible.builtin.systemd:
+            name: docker
+            state: started
+            enabled: true
+
+        - name: "Install Docker Python SDK (required by community.docker.docker_container)"
+          ansible.builtin.pip:
+            name: docker
+            state: present
+            break_system_packages: true
+
   tasks:
     # ============================================================
     # STEP 1: Retrieve secrets needed for this phase from Vault
