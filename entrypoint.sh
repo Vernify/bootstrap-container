@@ -108,6 +108,7 @@ if [[ -n "${BOOTSTRAP_SSH_PRIVATE_KEY_B64:-}" ]]; then
   SSH_KEY_FILE="/root/.ssh/id_vernify_bootstrap"
 elif [[ -f "${SSH_KEY_FILE}" ]]; then
   _info "Using SSH key mounted at ${SSH_KEY_FILE}."
+  mkdir -p /root/.ssh
   cp "${SSH_KEY_FILE}" /root/.ssh/id_vernify_bootstrap
   chmod 600 /root/.ssh/id_vernify_bootstrap
   SSH_KEY_FILE="/root/.ssh/id_vernify_bootstrap"

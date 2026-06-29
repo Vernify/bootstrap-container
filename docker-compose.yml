@@ -26,6 +26,12 @@ services:
       - PROXMOX_NODE
       - PROXMOX_STORAGE
       - PROXMOX_ISO_STORAGE
+      # WORKSPACE tells bootstrap-phase-3-5.sh where the terraform-*-deploy repos
+      # live relative to the container's /workspace mount. BOOTSTRAP_WORKSPACE_PATH
+      # mounts the whole ~/workspace tree, so the repos are one level down at
+      # /workspace/vernify/... — the script's own bare "/workspace" default does
+      # not match this layout.
+      - WORKSPACE=/workspace/vernify
       - TFC_TOKEN
       - GIT_PAT
       - STEP_CA_PROVISIONER_PASSWORD
