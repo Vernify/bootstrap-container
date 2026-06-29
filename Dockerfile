@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 # ── pinned tool versions ────────────────────────────────────────────────────
 ARG PACKER_VERSION=1.11.2
-ARG TERRAFORM_VERSION=1.9.8
+ARG TERRAFORM_VERSION=1.15.6
 ARG VAULT_VERSION=1.17.5
 ARG STEP_VERSION=0.27.4
 ARG ARCH=amd64
