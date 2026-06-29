@@ -341,8 +341,15 @@
 
     - name: "Set facts for Vault TLS material (PEM content, per vault_server_tls_cert/key contract)"
       ansible.builtin.set_fact:
-        vault_tls_cert_pem: "{{ step_ca_issue_certificate_pem }}"
-        vault_tls_key_pem: "{{ step_ca_issue_certificate_key_pem }}"
+        # | string strips AnsibleUnsafeText (see the matching note on Step
+        # 6's root-ca-cert seed task): step_ca_issue_certificate_pem/
+        # _key_pem went through the identical slurp | b64decode | set_fact
+        # path inside issue_certificate's role, so they carry the same
+        # wrapper. Stripped here, once, so every later use of
+        # vault_tls_cert_pem/_key_pem (the vault container's own TLS
+        # material, and Step 6's tls-cert/tls-key KV seeds) is unaffected.
+        vault_tls_cert_pem: "{{ step_ca_issue_certificate_pem | string }}"
+        vault_tls_key_pem: "{{ step_ca_issue_certificate_key_pem | string }}"
       no_log: true
 
     # ============================================================
@@ -512,7 +519,14 @@
             body_format: json
             body:
               data:
-                value: "{{ step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/root_ca.crt')) }}"
+                # | string strips Ansible's AnsibleUnsafeText wrapper (the
+                # value's type, confirmed via debug -- a value that went
+                # through slurp | b64decode | set_fact inside a delegated
+                # include_role gets this wrapper, marking it "unsafe" to
+                # prevent Jinja2 re-templating). The wrapped type was the
+                # one structural difference from every isolated
+                # reproduction, which all used plainer value paths.
+                value: "{{ (step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/root_ca.crt'))) | string }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
@@ -531,7 +545,9 @@
             body_format: json
             body:
               data:
-                value: "{{ step_ca_provisioner_password }}"
+                # | string strips AnsibleUnsafeText -- step_ca_provisioner_password
+                # comes from lookup('env', ...), which Ansible also marks unsafe.
+                value: "{{ step_ca_provisioner_password | string }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
@@ -588,7 +604,9 @@
             body_format: json
             body:
               data:
-                value: "{{ proxmox_token }}"
+                # | string strips AnsibleUnsafeText -- proxmox_token also
+                # comes from lookup('env', ...).
+                value: "{{ proxmox_token | string }}"
                 owner: "infrastructure-team"
                 usage: "machine"
                 managed_by: "automation"
@@ -607,7 +625,9 @@
             body_format: json
             body:
               data:
-                value: "{{ terraform_cloud_token }}"
+                # | string strips AnsibleUnsafeText -- terraform_cloud_token
+                # also comes from lookup('env', ...).
+                value: "{{ terraform_cloud_token | string }}"
                 owner: "infrastructure-team"
                 usage: "machine"
                 managed_by: "automation"
