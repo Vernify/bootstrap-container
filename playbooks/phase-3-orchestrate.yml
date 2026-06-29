@@ -102,9 +102,10 @@
       block:
         - name: "Check if step-ca already initialized (idempotency)"
           ansible.builtin.stat:
-            path: "/var/lib/step-ca/certs/root_ca.crt"
+            path: "/var/lib/step-ca/root_ca.crt"
           register: step_ca_root_cert_check
           delegate_to: sec01
+          become: true
 
         - name: "Run blueprints.step_ca.container_server"
           ansible.builtin.include_role:
@@ -169,6 +170,7 @@
             path: "/var/lib/vault/core/hsm"
           register: vault_storage_check
           delegate_to: sec01
+          become: true
 
         - name: "Run blueprints.vault.container_server"
           ansible.builtin.include_role:
@@ -283,7 +285,7 @@
             path: "{{ kv_mount }}/data/platform/step-ca/root-ca-cert"
             data:
               data:
-                value: "{{ step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/certs/root_ca.crt')) }}"
+                value: "{{ step_ca_server_root_ca_cert | default(lookup('file', '/var/lib/step-ca/root_ca.crt')) }}"
                 owner: "platform-team"
                 usage: "machine"
                 managed_by: "automation"
