@@ -255,6 +255,31 @@
     # ============================================================
     # STEP 2: Issue TLS certificate for Jenkins
     # ============================================================
+    # The CA fingerprint (a PUBLIC value, used for TOFU bootstrap) is not
+    # available here the way it was in Phase 3 -- Phase 3 got it as a fact
+    # from the step_ca container_server role it ran; Phase 4 does not run
+    # that role (step-ca already exists on sec01). The previous
+    # lookup('env', 'STEP_CA_ROOT_FINGERPRINT') was always empty in the
+    # automated bootstrap. Recompute it from the retained root cert on
+    # sec01, using the exact same openssl pipeline container_server uses
+    # (strip colons, lowercase) so the value matches what step-ca expects.
+    - name: "[STEP 2a] Compute step-ca root fingerprint from the retained root cert on sec01"
+      ansible.builtin.shell: |
+        set -o pipefail
+        openssl x509 -in /var/lib/step-ca/root_ca.crt \
+          -noout -fingerprint -sha256 \
+          | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f'
+      args:
+        executable: /bin/bash
+      register: step_ca_fingerprint_result
+      delegate_to: sec01
+      become: true
+      changed_when: false
+
+    - name: "[STEP 2a] Set step_ca_root_fingerprint fact"
+      ansible.builtin.set_fact:
+        step_ca_root_fingerprint: "{{ step_ca_fingerprint_result.stdout | trim }}"
+
     - name: "[STEP 2] Issue TLS certificate for Jenkins from step-ca"
       ansible.builtin.include_role:
         name: blueprints.step_ca.issue_certificate
@@ -268,7 +293,7 @@
           delegate_to: localhost
       vars:
         step_ca_issue_ca_url: "{{ step_ca_endpoint }}"
-        step_ca_issue_ca_fingerprint: "{{ lookup('env', 'STEP_CA_ROOT_FINGERPRINT', default='') }}"
+        step_ca_issue_ca_fingerprint: "{{ step_ca_root_fingerprint }}"
         step_ca_issue_provisioner_password: "{{ step_ca_provisioner_password }}"
         step_ca_issue_certificate_common_name: "jenkins.docker01.{{ vernify_internal_domain }}"
         step_ca_issue_certificate_subject_alt_names:
