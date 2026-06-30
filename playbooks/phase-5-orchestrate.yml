@@ -299,6 +299,23 @@
         jenkins_agent_jnlp_secret: "{{ jnlp_file_content.content | regex_search('<argument>([0-9a-f]+)</argument>', '\\1') | first }}"
       no_log: true
 
+    # The Jenkins controller (docker01) serves HTTPS with a step-ca-issued
+    # cert. The Java agent validates the WebSocket TLS against the JVM
+    # truststore (which jenkins_agent_validate_certs does NOT affect), so
+    # it needs the step-ca root CA explicitly or it fails with a PKIX
+    # path-building error. Read the public root cert from sec01 and pass it
+    # to the agent role, which trusts it via `-cert @<file>`.
+    - name: "[STEP 3a] Read step-ca root cert from sec01 (for the agent to trust the controller)"
+      ansible.builtin.slurp:
+        src: /etc/ssl/certs/step-ca-root.crt
+      register: _step_ca_root_cert_slurp
+      delegate_to: sec01
+      become: true
+
+    - name: "[STEP 3a] Set step_ca_root_cert fact"
+      ansible.builtin.set_fact:
+        step_ca_root_cert: "{{ _step_ca_root_cert_slurp.content | b64decode }}"
+
     # ============================================================
     # STEP 3: Deploy Jenkins agent (systemd)
     # ============================================================
@@ -314,7 +331,11 @@
         jenkins_agent_secret: "{{ jenkins_agent_jnlp_secret }}"
         jenkins_controller_mode: "container"
         jenkins_agent_use_websocket: true
-        jenkins_agent_validate_certs: false  # step-ca root not yet trusted system-wide on agent01
+        # step-ca root not trusted system-wide on agent01; the role trusts
+        # it for the agent connection via -cert (jenkins_agent_controller_ca_cert),
+        # so this only relaxes the agent.jar download.
+        jenkins_agent_validate_certs: false
+        jenkins_agent_controller_ca_cert: "{{ step_ca_root_cert }}"
       no_log: true
 
     # ============================================================
