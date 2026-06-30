@@ -123,6 +123,29 @@
         ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
         ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 
+    # This phase delegates tasks to sec01 (Vault AppRole/admin-token reads)
+    # and docker01 (Jenkins node create + JNLP secret fetch). Each phase is
+    # its own ansible-playbook invocation with a fresh in-memory inventory,
+    # so sec01/docker01 -- added by earlier phases -- are not present here.
+    # Without these, the first delegate_to: sec01 / delegate_to: docker01
+    # task fails UNREACHABLE against a literal unknown host. Both are
+    # Ubuntu VMs using the cloud-init ubuntu user, unlike agent01 above.
+    - name: "[PRE] Add sec01 to in-memory inventory"
+      ansible.builtin.add_host:
+        name: sec01
+        ansible_host: "{{ sec01_ip }}"
+        ansible_user: "{{ bootstrap_ssh_user }}"
+        ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+    - name: "[PRE] Add docker01 to in-memory inventory"
+      ansible.builtin.add_host:
+        name: docker01
+        ansible_host: "{{ docker01_ip }}"
+        ansible_user: "{{ bootstrap_ssh_user }}"
+        ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
     - name: "[PRE] Configure /etc/hosts on agent01"
       ansible.builtin.copy:
         content: |

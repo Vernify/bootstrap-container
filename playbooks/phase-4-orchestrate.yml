@@ -106,6 +106,21 @@
         ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
         ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
 
+    # Three later tasks (Read step-ca provisioner password, Read/Generate
+    # AppRole creds, Seed admin-token) delegate_to: sec01 to reach Vault's
+    # CLI/API on the host where it actually runs. sec01 was added to the
+    # in-memory inventory by Phase 3, but each phase is its own ansible-
+    # playbook invocation with a fresh in-memory inventory -- without this,
+    # delegate_to: sec01 resolves to a literal unknown host and fails
+    # UNREACHABLE on the first such task.
+    - name: "[PRE] Add sec01 to in-memory inventory"
+      ansible.builtin.add_host:
+        name: sec01
+        ansible_host: "{{ sec01_ip }}"
+        ansible_user: "{{ bootstrap_ssh_user }}"
+        ansible_ssh_private_key_file: "{{ ansible_ssh_private_key_file_arg }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
     - name: "[PRE] Configure /etc/hosts on docker01"
       ansible.builtin.copy:
         content: |
