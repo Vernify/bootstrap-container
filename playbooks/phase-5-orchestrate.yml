@@ -76,6 +76,31 @@
           - agent01_ip is defined and agent01_ip | length > 0
         fail_msg: "Missing sec01_ip / docker01_ip / agent01_ip. Expected as extra-vars from scripts/bootstrap-phase-3-5.sh."
 
+    # MUST come before the Jenkins reachability check below, and before the
+    # later localhost-run Vault lookups: those run from localhost (the
+    # bootstrap container) against docker01.vernify.internal /
+    # sec01.vernify.internal, and each `docker compose run` is a fresh
+    # container whose /etc/hosts does NOT carry over earlier phases' entries
+    # -- without this first, the check fails with "Name or service not
+    # known". The agent01 /etc/hosts task below is delegate_to: agent01, a
+    # different host's file, and does not help localhost resolve anything.
+    - name: "[PRE] Add sec01/docker01 DNS entries to localhost's /etc/hosts (checks + lookups run here)"
+      # /etc/hosts inside a Docker container is bind-mounted -- lineinfile/copy
+      # use an atomic write-temp-then-rename pattern internally, which fails
+      # with "Device or resource busy" against a bind-mount target. Append
+      # directly instead, guarded by an idempotency check.
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! grep -qF "{{ sec01_ip }} sec01" /etc/hosts; then
+          echo "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}" >> /etc/hosts
+        fi
+        if ! grep -qF "{{ docker01_ip }} docker01" /etc/hosts; then
+          echo "{{ docker01_ip }} docker01 docker01.{{ vernify_internal_domain }} jenkins jenkins.docker01 jenkins.docker01.{{ vernify_internal_domain }}" >> /etc/hosts
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+
     - name: "[PRE] Verify Phase 4 completed (Jenkins reachable)"
       ansible.builtin.uri:
         url: "{{ jenkins_endpoint }}/api/json"

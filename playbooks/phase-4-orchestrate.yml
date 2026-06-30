@@ -67,6 +67,27 @@
           - docker01_ip is defined and docker01_ip | length > 0
         fail_msg: "Missing sec01_ip / docker01_ip. Expected as extra-vars from scripts/bootstrap-phase-3-5.sh."
 
+    # MUST come before the Vault health check below: that check runs from
+    # localhost (the bootstrap container) against sec01.vernify.internal,
+    # and each `docker compose run` is a fresh container whose /etc/hosts
+    # does NOT carry over Phase 3's entry -- without this first, the health
+    # check fails with "Name or service not known". Also needed later by
+    # blueprints.step_ca.issue_certificate, which runs on localhost and
+    # requests against sec01 (where step-ca actually runs, not docker01).
+    - name: "[PRE] Add sec01 DNS entry to localhost's /etc/hosts (Vault check + issue_certificate run here)"
+      # /etc/hosts inside a Docker container is bind-mounted -- lineinfile/copy
+      # use an atomic write-temp-then-rename pattern internally, which fails
+      # with "Device or resource busy" against a bind-mount target. Append
+      # directly instead, guarded by an idempotency check.
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! grep -qF "{{ sec01_ip }} sec01" /etc/hosts; then
+          echo "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}" >> /etc/hosts
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+
     - name: "[PRE] Verify Phase 3 completed (Vault reachable and unsealed)"
       ansible.builtin.uri:
         url: "{{ vault_endpoint }}/v1/sys/health"
@@ -100,25 +121,6 @@
         group: root
       become: true
       delegate_to: docker01
-
-    # blueprints.step_ca.issue_certificate runs on localhost (see that
-    # include_role's apply: block below) and requests against sec01 (where
-    # step-ca actually runs, not docker01) -- localhost needs to resolve
-    # sec01's internal DNS name. Additive (lineinfile), not a full
-    # overwrite, since this is the container's own /etc/hosts.
-    - name: "[PRE] Add sec01 DNS entry to localhost's /etc/hosts (issue_certificate runs here)"
-      # /etc/hosts inside a Docker container is bind-mounted -- lineinfile/copy
-      # use an atomic write-temp-then-rename pattern internally, which fails
-      # with "Device or resource busy" against a bind-mount target. Append
-      # directly instead, guarded by an idempotency check.
-      ansible.builtin.shell: |
-        set -o pipefail
-        if ! grep -qF "{{ sec01_ip }} sec01" /etc/hosts; then
-          echo "{{ sec01_ip }} sec01 sec01.{{ vernify_internal_domain }} vault vault.sec01 vault.sec01.{{ vernify_internal_domain }} step-ca ca.sec01 ca.sec01.{{ vernify_internal_domain }}" >> /etc/hosts
-        fi
-      args:
-        executable: /bin/bash
-      changed_when: true
 
     # blueprints.jenkins.container_server runs community.docker.docker_container
     # against docker01 -- the Docker engine itself is not part of the Packer
