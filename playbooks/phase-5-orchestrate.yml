@@ -162,6 +162,23 @@
       become: true
       delegate_to: agent01
 
+    # Phase 3 retains the Vault root token at /opt/vault/root-token.txt on
+    # sec01 (root 0600) for later phases; read it once here and use it for
+    # every Vault CLI/API call below, replacing the empty
+    # lookup('env', 'VAULT_TOKEN').
+    - name: "[PRE] Read Vault root token from sec01"
+      ansible.builtin.slurp:
+        src: /opt/vault/root-token.txt
+      register: _vault_root_token_slurp
+      delegate_to: sec01
+      become: true
+      no_log: true
+
+    - name: "[PRE] Set vault_root_token fact"
+      ansible.builtin.set_fact:
+        vault_root_token: "{{ _vault_root_token_slurp.content | b64decode | trim }}"
+      no_log: true
+
   tasks:
     # ============================================================
     # STEP 1: Retrieve agent01 AppRole credentials from Vault
@@ -171,7 +188,7 @@
       environment:
         VAULT_ADDR: "{{ vault_endpoint }}"
         VAULT_CACERT: "{{ vault_cacert_path }}"
-        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
         VAULT_SKIP_VERIFY: "true"
       ansible.builtin.command: >
         vault kv get -format=json {{ kv_mount }}/platform/agent01/approle
@@ -193,7 +210,7 @@
       environment:
         VAULT_ADDR: "{{ vault_endpoint }}"
         VAULT_CACERT: "{{ vault_cacert_path }}"
-        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
         VAULT_SKIP_VERIFY: "true"
       ansible.builtin.command: >
         vault kv get -field=value {{ kv_mount }}/platform/jenkins/admin-token

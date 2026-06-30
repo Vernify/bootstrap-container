@@ -203,18 +203,34 @@
             state: present
             break_system_packages: true
 
+    # Phase 3 retains the Vault root token at /opt/vault/root-token.txt on
+    # sec01 (root 0600) precisely so later phases can authenticate. Read it
+    # here, once, and use it for every Vault CLI/API call below -- the
+    # earlier lookup('env', 'VAULT_TOKEN') approach assumed an operator
+    # shell with VAULT_TOKEN exported, which does not exist in the
+    # automated bootstrap (the .env ships VAULT_TOKEN="").
+    - name: "[PRE] Read Vault root token from sec01"
+      ansible.builtin.slurp:
+        src: /opt/vault/root-token.txt
+      register: _vault_root_token_slurp
+      delegate_to: sec01
+      become: true
+      no_log: true
+
+    - name: "[PRE] Set vault_root_token fact"
+      ansible.builtin.set_fact:
+        vault_root_token: "{{ _vault_root_token_slurp.content | b64decode | trim }}"
+      no_log: true
+
   tasks:
     # ============================================================
     # STEP 1: Retrieve secrets needed for this phase from Vault
     # (Phase 3 already wrote these; Phase 4 only reads — no hardcoded values)
     #
-    # The bootstrap operator still holds VAULT_TOKEN (root or a break-glass
-    # token) at this point in the bootstrap sequence — AppRole auth is what
+    # Authenticates with the Vault root token retained on sec01 by Phase 3
+    # (read into vault_root_token in pre_tasks above). AppRole auth is what
     # Jenkins/agents use at runtime, not what this orchestration playbook
-    # uses to read Phase 3's seeded secrets. Read via `vault kv get` over
-    # SSH on sec01 rather than a Vault lookup plugin so this works with
-    # whatever VAULT_TOKEN the operator's shell currently has exported,
-    # consistent with Phase 3's own Vault CLI usage.
+    # uses to read Phase 3's seeded secrets.
     # ============================================================
     - name: "[STEP 1] Retrieve step-ca provisioner password from Vault"
       block:
@@ -222,7 +238,7 @@
           environment:
             VAULT_ADDR: "{{ vault_endpoint }}"
             VAULT_CACERT: "{{ vault_cacert_path }}"
-            VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+            VAULT_TOKEN: "{{ vault_root_token }}"
             VAULT_SKIP_VERIFY: "true"
           ansible.builtin.command: >
             vault kv get -field=value {{ kv_mount }}/platform/step-ca/provisioner-password
@@ -277,7 +293,7 @@
       environment:
         VAULT_ADDR: "{{ vault_endpoint }}"
         VAULT_CACERT: "{{ vault_cacert_path }}"
-        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
         VAULT_SKIP_VERIFY: "true"
       ansible.builtin.command: >
         vault kv get -format=json {{ kv_mount }}/platform/jenkins/approle
@@ -361,7 +377,7 @@
       environment:
         VAULT_ADDR: "{{ vault_endpoint }}"
         VAULT_CACERT: "{{ vault_cacert_path }}"
-        VAULT_TOKEN: "{{ lookup('env', 'VAULT_TOKEN') }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
         VAULT_SKIP_VERIFY: "true"
       ansible.builtin.command: >
         vault kv put {{ kv_mount }}/platform/jenkins/admin-token

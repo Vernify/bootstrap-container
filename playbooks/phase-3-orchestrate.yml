@@ -803,12 +803,25 @@
             msg: "AppRole setup failed. Vault secrets from Step 6 are intact; re-run this playbook to retry AppRole creation (idempotent)."
 
     # ============================================================
-    # STEP 8: Cleanup ephemeral root token (per design: deleted after seeding)
+    # STEP 8: Retain root token on sec01 (root 0600) for later phases
     # ============================================================
-    - name: "[STEP 8] Remove root token file from sec01"
+    # Deliberately NOT deleted (operator decision): Phases 4 and 5 need
+    # Vault admin access to read seeded secrets, mint AppRole secret-ids,
+    # and seed the Jenkins admin token. The retained, root-only 0600 token
+    # file is the agreed mechanism. Rationale: anyone with root on sec01
+    # already holds the unseal keys (also root 0600 here, required for
+    # auto-unseal) and could mint a fresh root token via generate-root
+    # regardless, so retaining this token does not meaningfully widen the
+    # blast radius, while greatly simplifying downstream automation.
+    # Ensure the permissions are exactly root:root 0600 (defensive; the
+    # init_and_unseal role already writes it this way).
+    - name: "[STEP 8] Ensure root token file on sec01 is root-only (0600)"
       ansible.builtin.file:
         path: "/opt/vault/root-token.txt"
-        state: absent
+        state: file
+        mode: "0600"
+        owner: root
+        group: root
       delegate_to: sec01
       become: true
 
@@ -836,7 +849,8 @@
                   kv/saas/proxmox/api-token, kv/saas/tfc/team-token
                 - AppRoles created: jenkins (kv/platform/jenkins/approle),
                   agent01 (kv/platform/agent01/approle)
-                - Root token file removed from sec01
+                - Root token retained at /opt/vault/root-token.txt (root 0600)
+                  for Phases 4/5 automation
 
               Operator reminder: unseal keys at /opt/vault/unseal-keys.json on
               sec01 must already be backed up externally (gate enforced by
