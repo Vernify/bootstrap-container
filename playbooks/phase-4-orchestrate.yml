@@ -304,6 +304,11 @@
           - "jenkins"
           - "jenkins.docker01"
           - "jenkins.docker01.{{ vernify_internal_domain }}"
+          # jenkins_endpoint (used by Phase 5's agent connection) is
+          # docker01.vernify.internal -- the cert must cover it or the
+          # Java agent fails hostname verification after trusting the CA.
+          - "docker01"
+          - "docker01.{{ vernify_internal_domain }}"
           - "{{ docker01_ip }}"
         step_ca_issue_certificate_validity_days: 365
       register: jenkins_cert_issue_result
