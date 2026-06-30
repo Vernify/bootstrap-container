@@ -70,7 +70,7 @@ collections:
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
     type: git
-    version: f6403b1899c03105e4e673e5dcfef4c1227d92d9  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 4d5a6dcab132268eb6f766694a5c1e353483fb7d  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.graylog
     source: https://github.com/iac-foundry/ansible-collection-graylog
