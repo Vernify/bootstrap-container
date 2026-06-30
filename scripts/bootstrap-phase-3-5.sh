@@ -233,9 +233,14 @@ validate_environment() {
 wait_for_ssh() {
   local host="$1"
   local label="$2"
+  # Per-host SSH user: sec01/docker01 are cloud-init VMs using ${CI_USER}
+  # (ubuntu), but agent01 is an unprivileged LXC whose ssh_public_keys are
+  # authorized for root, with no ubuntu user at all -- checking as ubuntu
+  # there never succeeds and fails "SSH unreachable after 300 seconds".
+  local user="${3:-${CI_USER}}"
   log_info "Waiting for ${label} (${host}) SSH accessibility (max 300s)..."
   local retries=30
-  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY_FILE}" "${CI_USER}@${host}" /bin/true 2>/dev/null; do
+  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i "${SSH_KEY_FILE}" "${user}@${host}" /bin/true 2>/dev/null; do
     retries=$((retries - 1))
     if [[ ${retries} -le 0 ]]; then
       error_exit "${label} SSH unreachable after 300 seconds"
@@ -367,7 +372,7 @@ phase5_provision_agent01() {
   AGENT01_IP="$(tf_output "${repo}" agent01_ipv4_address)"
   log_success "agent01 LXC provisioned (IP: ${AGENT01_IP})"
 
-  wait_for_ssh "${AGENT01_IP}" "agent01"
+  wait_for_ssh "${AGENT01_IP}" "agent01" "root"
 }
 
 phase5_run_orchestration() {
