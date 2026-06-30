@@ -317,6 +317,10 @@
       ansible.builtin.set_fact:
         jenkins_tls_cert_pem: "{{ step_ca_issue_certificate_pem }}"
         jenkins_tls_key_pem: "{{ step_ca_issue_certificate_key_pem }}"
+        # SHA passed to jenkins.container_server as a label so docker_container
+        # detects cert changes and recreates the container -- bind-mounted file
+        # changes alone don't trigger a recreate, leaving the old cert serving.
+        jenkins_tls_cert_sha: "{{ step_ca_issue_certificate_pem | hash('sha256') }}"
       no_log: true
 
     # ============================================================
@@ -363,6 +367,7 @@
             jenkins_server_https_port: 8443
             jenkins_server_tls_cert: "{{ jenkins_tls_cert_pem }}"
             jenkins_server_tls_key: "{{ jenkins_tls_key_pem }}"
+            jenkins_server_tls_cert_sha: "{{ jenkins_tls_cert_sha }}"
             jenkins_server_admin_secret: "{{ jenkins_admin_secret_generated }}"
             jenkins_server_vault_url: "{{ vault_endpoint }}"
             jenkins_server_vault_role_id: "{{ jenkins_vault_role_id }}"
