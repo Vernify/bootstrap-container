@@ -309,7 +309,7 @@ phase3_run_orchestration() {
   ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-3-orchestrate.yml" \
     -e "sec01_ip=${SEC01_IP}" \
     -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
-    -e "ansible_user=${CI_USER}" \
+    -e "bootstrap_ssh_user=${CI_USER}" \
     -e "proxmox_token=${PROXMOX_PASSWORD}" \
     -e "terraform_cloud_token=${TFC_TOKEN}" \
     -e "step_ca_provisioner_password=${STEP_CA_PROVISIONER_PASSWORD}" \
@@ -347,7 +347,7 @@ phase4_run_orchestration() {
     -e "sec01_ip=${SEC01_IP}" \
     -e "docker01_ip=${DOCKER01_IP}" \
     -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
-    -e "ansible_user=${CI_USER}" \
+    -e "bootstrap_ssh_user=${CI_USER}" \
     || error_exit "Phase 4 orchestration playbook failed"
 
   log_success "Phase 4 orchestration complete (docker01: Jenkins online, AppRole wired)"
@@ -383,7 +383,7 @@ phase5_run_orchestration() {
     -e "docker01_ip=${DOCKER01_IP}" \
     -e "agent01_ip=${AGENT01_IP}" \
     -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
-    -e "ansible_user=${CI_USER}" \
+    -e "bootstrap_ssh_user=${CI_USER}" \
     || error_exit "Phase 5 orchestration playbook failed"
 
   log_success "Phase 5 orchestration complete (agent01: Jenkins agent + Vault agent + toolchain ready)"
