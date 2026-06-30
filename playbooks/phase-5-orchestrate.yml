@@ -224,31 +224,61 @@
         jenkins_admin_token: "{{ jenkins_admin_token_lookup.stdout }}"
       no_log: true
 
-    - name: "Create agent01 node on Jenkins controller (if not already present)"
+    # doCreateItem is a CSRF-protected POST (returns 403 without a crumb).
+    # Fetch a crumb first and carry its session cookie into the POST, same
+    # pattern as Phase 4's credential creation.
+    - name: "Fetch Jenkins CSRF crumb (for node creation)"
       ansible.builtin.uri:
-        url: "{{ jenkins_endpoint }}/computer/doCreateItem?name=agent01&type=hudson.slaves.DumbSlave"
+        url: "{{ jenkins_endpoint }}/crumbIssuer/api/json"
+        method: GET
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_token }}"
+        force_basic_auth: true
+        validate_certs: false
+      delegate_to: docker01
+      register: jenkins_crumb_p5
+
+    - name: "Create agent01 node on Jenkins controller (if not already present)"
+      vars:
+        # A genuine dict serialized with to_json -- NOT a JSON string
+        # literal, which Ansible's native-type coercion would turn back
+        # into a dict and then str() into a Python repr (the bug hit in
+        # Phase 4's credential POST). $ in RetentionStrategy$Always and the
+        # hyphenated stapler-class keys survive to_json + urlencode fine.
+        _node_json:
+          name: agent01
+          nodeDescription: "Vernify build agent (LXC)"
+          numExecutors: "2"
+          remoteFS: "/var/lib/jenkins-agent"
+          labelString: "agent01 packer-build terraform-plan ansible-execute"
+          mode: "NORMAL"
+          type: "hudson.slaves.DumbSlave"
+          retentionStrategy:
+            stapler-class: "hudson.slaves.RetentionStrategy$Always"
+          launcher:
+            stapler-class: "hudson.slaves.JNLPLauncher"
+            workDirSettings:
+              disabled: false
+          nodeProperties:
+            stapler-class-bag: "true"
+      ansible.builtin.uri:
+        url: "{{ jenkins_endpoint }}/computer/doCreateItem"
         method: POST
         user: "{{ jenkins_admin_user }}"
         password: "{{ jenkins_admin_token }}"
         force_basic_auth: true
         validate_certs: false
-        body_format: form-urlencoded
-        body:
-          name: agent01
-          type: hudson.slaves.DumbSlave
-          json: >-
-            {"name": "agent01", "nodeDescription": "Vernify build agent (LXC)",
-             "numExecutors": "2", "remoteFS": "/var/lib/jenkins-agent",
-             "labelString": "agent01 packer-build terraform-plan ansible-execute",
-             "mode": "NORMAL", "type": "hudson.slaves.DumbSlave",
-             "retentionStrategy": {"stapler-class": "hudson.slaves.RetentionStrategy$Always"},
-             "launcher": {"stapler-class": "hudson.slaves.JNLPLauncher", "workDirSettings": {"disabled": false}},
-             "nodeProperties": {"stapler-class-bag": "true"}}
+        headers:
+          Jenkins-Crumb: "{{ jenkins_crumb_p5.json.crumb }}"
+          Cookie: "{{ jenkins_crumb_p5.cookies_string }}"
+          Content-Type: "application/x-www-form-urlencoded"
+        body_format: raw
+        body: "name=agent01&type=hudson.slaves.DumbSlave&json={{ _node_json | to_json | urlencode }}"
+        # 400 is returned by some Jenkins versions when the node already
+        # exists; treated as idempotent no-op.
+        status_code: [200, 302, 400]
       delegate_to: docker01
       register: jenkins_node_create
-      failed_when:
-        - jenkins_node_create.status not in [200, 302, 400]
-        # 400 is returned by some Jenkins versions when the node already exists; treated as idempotent no-op.
       changed_when: jenkins_node_create.status in [200, 302]
 
     - name: "Retrieve JNLP agent secret for agent01"
