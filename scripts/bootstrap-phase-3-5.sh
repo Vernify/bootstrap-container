@@ -211,9 +211,9 @@ validate_environment() {
   done
   log_success "All dependencies available"
 
-  for repo in terraform-workspaces-deploy terraform-sec01-deploy terraform-build01-deploy terraform-agent01-deploy; do
+  for repo in terraform-workspaces-deploy terraform-sec01-deploy/terraform terraform-build01-deploy/terraform terraform-agent01-deploy/terraform; do
     if [[ ! -d "${WORKSPACE}/${repo}" ]]; then
-      error_exit "Terraform repo not found: ${WORKSPACE}/${repo}"
+      error_exit "Terraform directory not found: ${WORKSPACE}/${repo}"
     fi
   done
   log_success "Terraform repos present"
@@ -287,7 +287,7 @@ ensure_tfc_workspaces() {
 
 phase3_provision_sec01() {
   log_info "=== PHASE 3a: Provision sec01 (Terraform) ==="
-  local repo="${WORKSPACE}/terraform-sec01-deploy"
+  local repo="${WORKSPACE}/terraform-sec01-deploy/terraform"
 
   terraform -chdir="${repo}" init -input=false
   terraform -chdir="${repo}" apply -auto-approve \
@@ -328,7 +328,7 @@ phase3_run_orchestration() {
 
 phase4_provision_docker01() {
   log_info "=== PHASE 4a: Provision docker01 (Terraform) ==="
-  local repo="${WORKSPACE}/terraform-build01-deploy"
+  local repo="${WORKSPACE}/terraform-build01-deploy/terraform"
 
   terraform -chdir="${repo}" init -input=false
   terraform -chdir="${repo}" apply -auto-approve \
@@ -366,7 +366,7 @@ phase4_run_orchestration() {
 
 phase5_provision_agent01() {
   log_info "=== PHASE 5a: Provision agent01 (Terraform, LXC) ==="
-  local repo="${WORKSPACE}/terraform-agent01-deploy"
+  local repo="${WORKSPACE}/terraform-agent01-deploy/terraform"
 
   terraform -chdir="${repo}" init -input=false
   terraform -chdir="${repo}" apply -auto-approve \
