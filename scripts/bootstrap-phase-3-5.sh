@@ -4,8 +4,9 @@
 # Unified Bootstrap Script: Vernify Phases 3, 4, 5
 #
 # Purpose: Orchestrate complete homelab bootstrap in a single idempotent
-# script. Each phase is delegated to an Ansible orchestration playbook
-# (playbooks/phase-{3,4,5}-orchestrate.yml); this script's job is:
+# script. Each phase delegates to the site.yml playbook that lives alongside
+# the Terraform code for that server (terraform-{sec01,build01,agent01}-deploy/
+# ansible/site.yml). This script's job is:
 #   - pre-flight validation
 #   - Terraform provisioning of the three Proxmox targets
 #   - dynamic Ansible inventory generation from Terraform outputs
@@ -303,10 +304,13 @@ phase3_provision_sec01() {
 }
 
 phase3_run_orchestration() {
-  log_info "=== PHASE 3b: Run phase-3-orchestrate.yml (step-ca, Vault, secret seeding) ==="
+  log_info "=== PHASE 3b: Run sec01 site.yml (step-ca, Vault, secret seeding) ==="
   log_warn "This step includes an interactive, blocking operator gate (Vault unseal-key backup)."
+  local playbook="${WORKSPACE}/terraform-sec01-deploy/ansible/site.yml"
+  local reqs="${WORKSPACE}/terraform-sec01-deploy/ansible/requirements.yml"
 
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-3-orchestrate.yml" \
+  ansible-galaxy collection install -r "${reqs}" --force -q
+  ansible-playbook "${playbook}" \
     -e "sec01_ip=${SEC01_IP}" \
     -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
     -e "bootstrap_ssh_user=${CI_USER}" \
@@ -341,9 +345,12 @@ phase4_provision_docker01() {
 }
 
 phase4_run_orchestration() {
-  log_info "=== PHASE 4b: Run phase-4-orchestrate.yml (Jenkins + Vault AppRole wiring) ==="
+  log_info "=== PHASE 4b: Run docker01 site.yml (Jenkins + Vault AppRole wiring) ==="
+  local playbook="${WORKSPACE}/terraform-build01-deploy/ansible/site.yml"
+  local reqs="${WORKSPACE}/terraform-build01-deploy/ansible/requirements.yml"
 
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-4-orchestrate.yml" \
+  ansible-galaxy collection install -r "${reqs}" --force -q
+  ansible-playbook "${playbook}" \
     -e "sec01_ip=${SEC01_IP}" \
     -e "docker01_ip=${DOCKER01_IP}" \
     -e "ansible_ssh_private_key_file=${SSH_KEY_FILE}" \
@@ -376,9 +383,12 @@ phase5_provision_agent01() {
 }
 
 phase5_run_orchestration() {
-  log_info "=== PHASE 5b: Run phase-5-orchestrate.yml (Jenkins agent, Vault agent, toolchain) ==="
+  log_info "=== PHASE 5b: Run agent01 site.yml (Jenkins agent, Vault agent, toolchain) ==="
+  local playbook="${WORKSPACE}/terraform-agent01-deploy/ansible/site.yml"
+  local reqs="${WORKSPACE}/terraform-agent01-deploy/ansible/requirements.yml"
 
-  ansible-playbook "${BOOTSTRAP_DIR}/playbooks/phase-5-orchestrate.yml" \
+  ansible-galaxy collection install -r "${reqs}" --force -q
+  ansible-playbook "${playbook}" \
     -e "sec01_ip=${SEC01_IP}" \
     -e "docker01_ip=${DOCKER01_IP}" \
     -e "agent01_ip=${AGENT01_IP}" \
