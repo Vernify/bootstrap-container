@@ -60,7 +60,7 @@ collections:
   - name: blueprints.vault_integrations
     source: https://github.com/iac-foundry/ansible-collection-vault-integrations
     type: git
-    version: cf37e8b367f1bbb22e40f1015b9ec9b35ca649e2  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: 93a4161d2afc8ca56a60e8b48276cb7e9eb8e4cc  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
