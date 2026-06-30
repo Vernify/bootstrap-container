@@ -65,7 +65,7 @@ collections:
   - name: blueprints.jenkins
     source: https://github.com/iac-foundry/ansible-collection-jenkins
     type: git
-    version: 6f959dced763542c37117c381faa6f9f2bcdd97e  # origin/feat/phase-3-5-bootstrap as of this fix
+    version: d9f60adabe882d14cd3285916411063e52cb7050  # origin/feat/phase-3-5-bootstrap as of this fix
 
   - name: blueprints.jenkins_integrations
     source: https://github.com/iac-foundry/ansible-collection-jenkins-integrations
